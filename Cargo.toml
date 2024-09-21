@@ -1,0 +1,39 @@
+[package]
+name = "vivo"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daniel Tucker <vivo@dantuck.com>"]
+categories = ["command-line-utilities"]
+documentation = "https://docs.rs/vivo"
+homepage = ""
+include = ["src/**/*", "LICENSE-*", "README.md", "config/**/*"]
+keywords = ["backup", "restic", "deduplication", "encryption", "cli", "b2"]
+license = "Apache-2.0 OR MIT"
+readme = "README.md"
+repository = "https://codeberg.org/tuck/vivo"
+resolver = "2"
+rust-version = "1.80.1"
+description = """
+vivo - restic backup w/ sync to b2
+"""
+
+[dependencies]
+knuffel = "3.2.0"
+clap = { version = "4.3.13", features = ["cargo"] }
+colored = "2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_yml = "0.0.12"
+miette = { version = "7.2.0", features = ["fancy"] }
+regex = "1.10.6"
+env_logger = "0.11.5"
+log = "0.4.22"
+term_size = "0.3.2"
+
+[[bin]]
+name = "vivo"
+path = "src/bin/vivo.rs"
+test = true
+bench = true
+doc = true
+harness = true
+edition = "2021"
