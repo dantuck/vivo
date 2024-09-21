@@ -70,16 +70,13 @@ impl VivoConfig {
     pub fn get_config_path(&self) -> String {
         self.config_file.clone().map_or_else(
             || {
-                if let Ok(backup_config) = env::var("BACKUP_CONFIG") {
+                if let Ok(backup_config) = env::var("VIVO_BACKUP_CONFIG") {
                     backup_config
-                } else if let (Ok(xdg_config_home), Ok(dots_folder)) =
-                    (env::var("XDG_CONFIG_HOME"), env::var("DOTS"))
-                {
-                    // Both XDG_CONFIG_HOME and DOTS exist
-                    format!("{}/{}/backup.kdl", xdg_config_home, dots_folder)
+                } else if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+                    format!("{}/vivo/backup.kdl", xdg_config_home)
                 } else {
                     // Fall back to user's home directory
-                    format!("{}/backup.kdl", env::var("HOME").unwrap())
+                    format!("{}/.config/vivo/backup.kdl", env::var("HOME").unwrap())
                 }
             },
             |path| path.to_string_lossy().into_owned(),
@@ -89,16 +86,15 @@ impl VivoConfig {
     pub fn get_secrets_path(&self) -> String {
         self.config_file.clone().map_or_else(
             || {
-                if let Ok(backup_config) = env::var("BACKUP_SECRETS") {
+                if let Ok(backup_config) = env::var("VIVO_BACKUP_SECRETS") {
                     backup_config
-                } else if let (Ok(xdg_config_home), Ok(dots_folder)) =
-                    (env::var("XDG_CONFIG_HOME"), env::var("DOTS"))
+                } else if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME")
                 {
                     // Both XDG_CONFIG_HOME and DOTS exist
-                    format!("{}/{}/secrets.yaml", xdg_config_home, dots_folder)
+                    format!("{}/vivo/secrets.yaml", xdg_config_home)
                 } else {
                     // Fall back to user's home directory
-                    format!("{}/.config/dots/secrets.yaml", env::var("HOME").unwrap())
+                    format!("{}/.config/vivo/secrets.yaml", env::var("HOME").unwrap())
                 }
             },
             |path| path.to_string_lossy().into_owned(),

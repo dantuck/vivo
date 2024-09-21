@@ -1,2 +1,2 @@
 [env]
-BACKUP_CONFIG = "backup.kdl"
+BACKUP_CONFIG = "sample.kdl"
