@@ -14,7 +14,7 @@ repository = "https://codeberg.org/tuck/vivo"
 resolver = "2"
 rust-version = "1.80.1"
 description = """
-vivo - restic backup w/ sync to b2
+[WIP] Vivo - restic backup w/ sync to b2
 """
 
 [dependencies]
