@@ -5,7 +5,6 @@ edition = "2021"
 authors = ["Daniel Tucker <vivo@dantuck.com>"]
 categories = ["command-line-utilities"]
 documentation = "https://docs.rs/vivo"
-homepage = ""
 include = ["src/**/*", "LICENSE-*", "README.md", "config/**/*"]
 keywords = ["backup", "restic", "deduplication", "encryption", "cli", "b2"]
 license = "Apache-2.0 OR MIT"
