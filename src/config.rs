@@ -87,7 +87,9 @@ impl VivoConfig {
     }
 
     pub fn get_secrets_path(&self) -> String {
-        secrets_path_from(self.config_file.as_ref())
+        // -c/--config sets the backup config path only; secrets path is always
+        // resolved from VIVO_BACKUP_SECRETS, XDG, or ~/.config/vivo/secrets.yaml
+        secrets_path_from(None)
     }
 }
 
@@ -100,7 +102,7 @@ pub fn config_path_from(config_file: Option<&PathBuf>) -> String {
             } else if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
                 format!("{xdg}/vivo/backup.kdl")
             } else {
-                format!("{}/.config/vivo/backup.kdl", env::var("HOME").unwrap())
+                format!("{}/.config/vivo/backup.kdl", env::var("HOME").expect("HOME environment variable must be set"))
             }
         })
 }
@@ -114,7 +116,7 @@ pub fn secrets_path_from(config_file: Option<&PathBuf>) -> String {
             } else if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
                 format!("{xdg}/vivo/secrets.yaml")
             } else {
-                format!("{}/.config/vivo/secrets.yaml", env::var("HOME").unwrap())
+                format!("{}/.config/vivo/secrets.yaml", env::var("HOME").expect("HOME environment variable must be set"))
             }
         })
 }
