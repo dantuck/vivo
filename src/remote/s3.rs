@@ -4,7 +4,7 @@ use std::process::Command;
 use super::RemoteBackend;
 
 pub struct S3Backend {
-    pub(super) url: String,
+    url: String,
 }
 
 impl S3Backend {
@@ -24,9 +24,10 @@ impl RemoteBackend for S3Backend {
     fn check_installed(&self) -> Result<(), String> {
         match Command::new("restic").arg("version").output() {
             Err(e) => Err(format!("failed to run restic: {e}")),
-            Ok(o) if !o.status.success() => {
-                Err("restic not found — install from https://restic.net".to_string())
-            }
+            Ok(o) if !o.status.success() => Err(format!(
+                "restic check failed (exit {}); try: restic version",
+                o.status.code().unwrap_or(-1)
+            )),
             Ok(_) => Ok(()),
         }
     }
