@@ -30,13 +30,13 @@ impl RemoteBackend for B2Backend {
     }
 
     fn check_installed(&self) -> Result<(), String> {
-        Command::new("b2")
-            .arg("version")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|_| ())
-            .ok_or_else(|| "b2 not found — install with: pip install b2".to_string())
+        match Command::new("b2").arg("version").output() {
+            Err(e) => Err(format!("failed to run b2: {e}")),
+            Ok(o) if !o.status.success() => {
+                Err("b2 not found — install with: pip install b2".to_string())
+            }
+            Ok(_) => Ok(()),
+        }
     }
 
     fn sync(
@@ -53,14 +53,14 @@ impl RemoteBackend for B2Backend {
             return Ok(());
         }
 
-        if !Path::new(&format!("{}/data", local_repo)).exists() {
+        if !Path::new(local_repo).join("data").exists() {
             return Err(format!(
                 "source repo '{local_repo}' has no data directory — aborting sync to prevent remote deletion"
             ));
         }
 
         let remote_url = format!("b2://{}/{}", self.bucket, self.path);
-        let status = Command::new("b2")
+        let output = Command::new("b2")
             .args([
                 "sync",
                 "--delete",
@@ -71,11 +71,12 @@ impl RemoteBackend for B2Backend {
                 &remote_url,
             ])
             .envs(env)
-            .status()
+            .output()
             .map_err(|e| format!("failed to run b2: {e}"))?;
 
-        if !status.success() {
-            return Err(format!("b2 sync to {remote_url} failed"));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("b2 sync to {remote_url} failed: {stderr}"));
         }
         Ok(())
     }
