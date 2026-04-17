@@ -1,6 +1,7 @@
 pub(crate) mod backup_config;
 pub(crate) mod config;
 pub(crate) mod ui;
+pub mod step;
 
 /// Vivo config
 pub use crate::config::VivoConfig;
