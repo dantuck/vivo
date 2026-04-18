@@ -1,0 +1,21 @@
+name: Mirror to GitHub
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '**'
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitHub
+        run: |
+          git remote add github "https://x-access-token:${{ secrets.GITHUB_PAT }}@github.com/tuck/vivo.git"
+          git push github --mirror
