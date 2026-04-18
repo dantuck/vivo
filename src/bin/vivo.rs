@@ -1,34 +1,251 @@
-//! Main entry point for Vivo
-use log::{debug, error, info};
-use vivo::BackupConfig;
-use vivo::VivoConfig;
+use log::debug;
+use std::{env, fs, path::Path, process};
+use vivo::{
+    build_cli, config_path_from, decrypt_sops_file, secrets_path_from, xdg_config_home,
+    BackupConfig, VivoConfig,
+};
+
+const CONFIG_TEMPLATE: &str = r#"default-task "backup"
+
+tasks {
+    task "backup" {
+        description "Main backup task"
+        backup {
+            repo "$HOME/.local/share/restic/main"
+            directory "$HOME"
+            exclude-file "$HOME/.config/vivo/excludes"
+            retention {
+                daily 7
+                weekly 5
+                monthly 12
+                yearly 2
+            }
+            // Add remotes here, e.g.:
+            // remote "s3:https://s3.amazonaws.com/my-bucket" {
+            //     credentials "aws"
+            // }
+            // remote "b2:my-bucket:restic/main" {
+            //     credentials "b2"
+            // }
+        }
+    }
+}
+"#;
+
+const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
+
+fn check_tool(name: &str) -> bool {
+    process::Command::new(name)
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn check_age_key() -> bool {
+    if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
+        return Path::new(&p).exists();
+    }
+    xdg_config_home().join("sops/age/keys.txt").exists()
+}
+
+fn open_in_editor(path: &str) {
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    if let Err(e) = process::Command::new(&editor).arg(path).status() {
+        eprintln!("error: could not open editor '{editor}': {e}");
+    }
+}
+
+fn open_with_sops(path: &str) {
+    if let Err(e) = process::Command::new("sops").arg(path).status() {
+        eprintln!("error: could not run sops: {e}");
+    }
+}
+
+fn ensure_parent_dirs(path: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("could not create directory: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Creates parent dirs and writes `contents` to `path` if it does not already exist.
+/// Returns Ok(true) on creation, Ok(false) if already exists, Err on I/O failure.
+fn create_with_template(path: &str, contents: &str) -> Result<bool, String> {
+    if Path::new(path).exists() {
+        return Ok(false);
+    }
+    ensure_parent_dirs(path)?;
+    fs::write(path, contents).map_err(|e| format!("could not write file: {e}"))?;
+    Ok(true)
+}
+
+fn cmd_config_init(config_path: &str) {
+    match create_with_template(config_path, CONFIG_TEMPLATE) {
+        Ok(true) => println!("Created config: {config_path}"),
+        Ok(false) => println!("Config already exists: {config_path}"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+fn cmd_config_edit(config_path: &str) {
+    if let Err(e) = create_with_template(config_path, CONFIG_TEMPLATE) {
+        eprintln!("error: {e}");
+        return;
+    }
+    open_in_editor(config_path);
+}
+
+fn cmd_config_show(config_path: &str) {
+    match fs::read_to_string(config_path) {
+        Ok(contents) => print!("{contents}"),
+        Err(e) => eprintln!("error: could not read config '{config_path}': {e}"),
+    }
+}
+
+fn cmd_secrets_init(secrets_path: &str) {
+    if Path::new(secrets_path).exists() {
+        println!("Secrets file already exists: {secrets_path}");
+        return;
+    }
+    if let Err(e) = ensure_parent_dirs(secrets_path) {
+        eprintln!("error: {e}");
+        return;
+    }
+
+    let tmp_path = env::temp_dir().join("vivo-secrets-init.tmp");
+    if let Err(e) = fs::write(&tmp_path, SECRETS_TEMPLATE) {
+        eprintln!("error: could not write secrets template: {e}");
+        return;
+    }
+
+    let output = process::Command::new("sops")
+        .arg("-e")
+        .arg("--output")
+        .arg(secrets_path)
+        .arg(&tmp_path)
+        .output();
+    let _ = fs::remove_file(&tmp_path);
+
+    match output {
+        Ok(o) if o.status.success() => {
+            println!("Created encrypted secrets: {secrets_path}");
+            println!("Run `vivo secrets edit` to set your restic_password and credentials.");
+        }
+        Ok(o) => eprintln!("error: sops encryption failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => eprintln!("error: could not run sops: {e}"),
+    }
+}
+
+fn cmd_secrets_edit(secrets_path: &str) {
+    if !Path::new(secrets_path).exists() {
+        eprintln!("Secrets file not found. Run `vivo secrets init` first.");
+        return;
+    }
+    open_with_sops(secrets_path);
+}
+
+fn cmd_secrets_show(secrets_path: &str) {
+    match decrypt_sops_file(secrets_path) {
+        Ok(contents) => print!("{contents}"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+fn cmd_init(config_path: &str, secrets_path: &str) {
+    println!("Checking prerequisites...");
+
+    let mut ok = true;
+
+    if check_tool("restic") {
+        println!("  [ok] restic");
+    } else {
+        eprintln!("  [missing] restic — install from https://restic.net");
+        ok = false;
+    }
+
+    if check_tool("sops") {
+        println!("  [ok] sops");
+    } else {
+        eprintln!("  [missing] sops — install from https://github.com/getsops/sops");
+        ok = false;
+    }
+
+    if check_age_key() {
+        println!("  [ok] age key");
+    } else {
+        eprintln!("  [missing] age key — generate with: age-keygen -o ~/.config/sops/age/keys.txt");
+        eprintln!("            then add the public key to .sops.yaml in your config directory");
+        ok = false;
+    }
+
+    if !ok {
+        eprintln!("\nInstall missing prerequisites and re-run `vivo init`.");
+        return;
+    }
+
+    println!();
+    cmd_config_init(config_path);
+    cmd_secrets_init(secrets_path);
+
+    println!();
+    println!("Setup complete. Next steps:");
+    println!("  1. Edit your backup config:  vivo config edit");
+    println!("  2. Set your restic password: vivo secrets edit");
+    println!("  3. Run a dry-run backup:     vivo --dry-run");
+}
 
 fn main() {
     env_logger::init();
-    debug!("Initializing Vivo");
 
-    let config = VivoConfig::from_args();
+    let matches = build_cli().get_matches();
 
-    debug!("{:?}", config);
+    debug!("args parsed");
 
-    if let Ok(backup_config) = BackupConfig::load_config(&config) {
-        info!("Using default_task [{}]", backup_config.default_task);
+    let config_path = config_path_from(matches.get_one("config"));
+    let secrets_path = secrets_path_from();
 
-        if let Some(task) = backup_config
-            .tasks
-            .iter()
-            .find(|&task| task.name == backup_config.default_task)
-        {
-            task.run(&config, &backup_config.tasks)
-
-            // ui::info(&format!("Backup task [{}] completed.", self.name));
-        } else {
-            error!(
-                "default_task [{}] is not configured",
-                backup_config.default_task
-            );
+    match matches.subcommand() {
+        Some(("init", _)) => {
+            cmd_init(&config_path, &secrets_path);
+            return;
         }
-    } else {
-        eprintln!("backup config not found");
+        Some(("config", sub)) => {
+            match sub.subcommand() {
+                Some(("init", _)) => cmd_config_init(&config_path),
+                Some(("edit", _)) => cmd_config_edit(&config_path),
+                Some(("show", _)) => cmd_config_show(&config_path),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("secrets", sub)) => {
+            match sub.subcommand() {
+                Some(("init", _)) => cmd_secrets_init(&secrets_path),
+                Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
+                Some(("show", _)) => cmd_secrets_show(&secrets_path),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let vivo_config = VivoConfig::from_matches(&matches);
+    debug!("{:?}", vivo_config);
+
+    match BackupConfig::load_config(&vivo_config) {
+        Ok((backup_config, secrets)) => {
+            let task_name = vivo_config
+                .task_name
+                .as_deref()
+                .unwrap_or(&backup_config.default_task);
+
+            match backup_config.tasks.iter().find(|t| t.name == task_name) {
+                Some(task) => task.run(&vivo_config, &backup_config.tasks, &secrets.credentials),
+                None => eprintln!("error: task '{task_name}' not found in config"),
+            }
+        }
+        Err(e) => eprintln!("error: {e}"),
     }
 }

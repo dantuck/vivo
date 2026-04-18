@@ -19,7 +19,7 @@ pub struct BackupConfig {
     pub tasks: Vec<Task>,
 }
 
-fn decrypt_sops_file(file_path: &str) -> Result<String, String> {
+pub fn decrypt_sops_file(file_path: &str) -> Result<String, String> {
     let output = SysCommand::new("sops")
         .arg("-d")
         .arg(file_path)

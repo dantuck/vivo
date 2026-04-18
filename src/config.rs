@@ -69,6 +69,15 @@ pub fn build_cli() -> Command {
         )
 }
 
+pub fn xdg_config_home() -> PathBuf {
+    env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env::var("HOME").expect("HOME environment variable must be set"))
+                .join(".config")
+        })
+}
+
 impl VivoConfig {
     pub fn from_matches(matches: &clap::ArgMatches) -> Self {
         VivoConfig {
@@ -87,9 +96,7 @@ impl VivoConfig {
     }
 
     pub fn get_secrets_path(&self) -> String {
-        // -c/--config sets the backup config path only; secrets path is always
-        // resolved from VIVO_BACKUP_SECRETS, XDG, or ~/.config/vivo/secrets.yaml
-        secrets_path_from(None)
+        secrets_path_from()
     }
 }
 
@@ -97,26 +104,20 @@ pub fn config_path_from(config_file: Option<&PathBuf>) -> String {
     config_file
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| {
-            if let Ok(v) = env::var("VIVO_BACKUP_CONFIG") {
-                v
-            } else if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-                format!("{xdg}/vivo/backup.kdl")
-            } else {
-                format!("{}/.config/vivo/backup.kdl", env::var("HOME").expect("HOME environment variable must be set"))
-            }
+            env::var("VIVO_BACKUP_CONFIG").unwrap_or_else(|_| {
+                xdg_config_home()
+                    .join("vivo/backup.kdl")
+                    .to_string_lossy()
+                    .into_owned()
+            })
         })
 }
 
-pub fn secrets_path_from(config_file: Option<&PathBuf>) -> String {
-    config_file
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| {
-            if let Ok(v) = env::var("VIVO_BACKUP_SECRETS") {
-                v
-            } else if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-                format!("{xdg}/vivo/secrets.yaml")
-            } else {
-                format!("{}/.config/vivo/secrets.yaml", env::var("HOME").expect("HOME environment variable must be set"))
-            }
-        })
+pub fn secrets_path_from() -> String {
+    env::var("VIVO_BACKUP_SECRETS").unwrap_or_else(|_| {
+        xdg_config_home()
+            .join("vivo/secrets.yaml")
+            .to_string_lossy()
+            .into_owned()
+    })
 }

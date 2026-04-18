@@ -53,14 +53,14 @@ fn run_call(
         return;
     }
     seen.insert(name.to_string());
-
     match tasks.iter().find(|t| t.name == name) {
         Some(task) => {
-            task.run(config, tasks, credentials);
+            task.run_inner(config, tasks, credentials, seen);
             ui::info(&format!("Task [{name}] completed."));
         }
         None => eprintln!("error: task '{name}' not found"),
     }
+    seen.remove(name);
 }
 
 impl Task {
@@ -70,6 +70,18 @@ impl Task {
         tasks: &[Task],
         credentials: &HashMap<String, HashMap<String, String>>,
     ) {
+        // Seed seen with self so any call chain that loops back to the root is caught.
+        let mut seen = HashSet::from([self.name.clone()]);
+        self.run_inner(config, tasks, credentials, &mut seen);
+    }
+
+    fn run_inner(
+        &self,
+        config: &VivoConfig,
+        tasks: &[Task],
+        credentials: &HashMap<String, HashMap<String, String>>,
+        seen: &mut HashSet<String>,
+    ) {
         info!("Running task [{}]", self.name);
         ui::section_header(&format!("Running task [{}]", self.name));
 
@@ -78,16 +90,18 @@ impl Task {
         }
 
         if let Some(backup) = &self.backup {
-            backup.run(config, credentials);
+            if let Err(e) = backup.run(config, credentials) {
+                eprintln!("error: {e}");
+                return;
+            }
         }
 
         for command in &self.commands {
             run_command(&command.cmd);
         }
 
-        let seen = HashSet::from([self.name.clone()]);
         for call in &self.calls {
-            run_call(&call.name, &mut seen.clone(), config, tasks, credentials);
+            run_call(&call.name, seen, config, tasks, credentials);
         }
     }
 }

@@ -4,8 +4,5 @@ pub(crate) mod ui;
 pub mod step;
 pub mod remote;
 
-/// Vivo config
-pub use crate::config::VivoConfig;
-
-/// Backup Config
-pub use crate::backup_config::BackupConfig;
+pub use crate::config::{build_cli, config_path_from, secrets_path_from, xdg_config_home, Secrets, VivoConfig};
+pub use crate::backup_config::{decrypt_sops_file, BackupConfig};

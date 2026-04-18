@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Command;
 
 use super::RemoteBackend;
@@ -53,11 +52,7 @@ impl RemoteBackend for B2Backend {
             return Ok(());
         }
 
-        if !Path::new(local_repo).join("data").exists() {
-            return Err(format!(
-                "source repo '{local_repo}' has no data directory — aborting sync to prevent remote deletion"
-            ));
-        }
+        super::verify_restic_repo(local_repo)?;
 
         let remote_url = format!("b2://{}/{}", self.bucket, self.path);
         let output = Command::new("b2")

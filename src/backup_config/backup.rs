@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use regex::Regex;
 use std::env;
@@ -46,30 +47,32 @@ struct BackupRetention {
     yearly: Option<i16>,
 }
 
+static ENV_VAR_RE: OnceLock<Regex> = OnceLock::new();
+
 fn expand_env_vars(path: &str) -> String {
-    let re = Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap();
+    let re = ENV_VAR_RE.get_or_init(|| Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap());
     re.replace_all(path, |caps: &regex::Captures| {
         env::var(&caps[1]).unwrap_or_else(|_| caps[0].to_string())
     })
     .to_string()
 }
 
-fn execute_command(command_name: &str, args: Vec<String>) {
-    match Command::new(command_name).args(&args).output() {
-        Ok(output) if output.status.success() => {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-        }
-        Ok(output) => {
-            eprint!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-        }
-        Err(e) => {
-            eprintln!("error: failed to run {command_name}: {e}");
-        }
-    }
+fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> {
+    Command::new(command_name)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("failed to run {command_name}: {e}"))
+        .and_then(|s| {
+            if s.success() {
+                Ok(())
+            } else {
+                Err(format!("{command_name} failed with status {s}"))
+            }
+        })
 }
 
 impl Backup {
-    fn backup(&self, dry_run: bool) {
+    fn backup(&self, dry_run: bool) -> Result<(), String> {
         let mut args = vec![
             "backup".to_string(),
             "-r".to_string(),
@@ -90,17 +93,17 @@ impl Backup {
             args.push("--dry-run".to_string());
         }
 
-        execute_command("restic", args);
+        execute_command("restic", args)
     }
 
-    fn check(&self) {
+    fn check(&self) -> Result<(), String> {
         execute_command(
             "restic",
             vec!["check".to_string(), "-r".to_string(), expand_env_vars(&self.repo)],
-        );
+        )
     }
 
-    fn forget(&self, dry_run: bool) {
+    fn forget(&self, dry_run: bool) -> Result<(), String> {
         let r = &self.retention;
         let daily = r.as_ref().and_then(|r| r.daily).unwrap_or(7);
         let weekly = r.as_ref().and_then(|r| r.weekly).unwrap_or(5);
@@ -126,7 +129,7 @@ impl Backup {
             args.push("--dry-run".to_string());
         }
 
-        execute_command("restic", args);
+        execute_command("restic", args)
     }
 
     fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) {
@@ -164,20 +167,25 @@ impl Backup {
         }
     }
 
-    pub fn run(&self, config: &VivoConfig, credentials: &HashMap<String, HashMap<String, String>>) {
+    pub fn run(
+        &self,
+        config: &VivoConfig,
+        credentials: &HashMap<String, HashMap<String, String>>,
+    ) -> Result<(), String> {
         let dry_run = config.dry_run || self.dry_run.unwrap_or(false);
 
         if config.start_step <= Step::Backup {
-            self.backup(dry_run);
+            self.backup(dry_run)?;
         }
         if config.start_step <= Step::Check {
-            self.check();
+            self.check()?;
         }
         if config.start_step <= Step::Forget {
-            self.forget(dry_run);
+            self.forget(dry_run)?;
         }
         if config.start_step <= Step::Sync {
             self.sync_remotes(dry_run, credentials);
         }
+        Ok(())
     }
 }

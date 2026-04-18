@@ -5,6 +5,7 @@ pub use b2::B2Backend;
 pub use s3::S3Backend;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 pub trait RemoteBackend {
     fn name(&self) -> &str;
@@ -15,6 +16,25 @@ pub trait RemoteBackend {
         dry_run: bool,
         env: &HashMap<String, String>,
     ) -> Result<(), String>;
+}
+
+/// Verifies all required restic repository components are present before a
+/// destructive sync (e.g. `b2 sync --delete`) that could corrupt the remote
+/// if the local repo is incomplete.
+pub fn verify_restic_repo(local_repo: &str) -> Result<(), String> {
+    let repo = Path::new(local_repo);
+    let missing: Vec<&str> = ["config", "data", "index", "keys", "snapshots"]
+        .iter()
+        .copied()
+        .filter(|entry| !repo.join(entry).exists())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "source repo '{local_repo}' is missing: {} — aborting sync to prevent remote corruption",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
