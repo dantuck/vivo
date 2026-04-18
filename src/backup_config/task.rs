@@ -85,9 +85,9 @@ impl Task {
             run_command(&command.cmd);
         }
 
-        let mut seen = HashSet::from([self.name.clone()]);
+        let seen = HashSet::from([self.name.clone()]);
         for call in &self.calls {
-            run_call(&call.name, &mut seen, config, tasks, credentials);
+            run_call(&call.name, &mut seen.clone(), config, tasks, credentials);
         }
     }
 }

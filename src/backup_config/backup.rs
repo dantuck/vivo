@@ -55,14 +55,16 @@ fn expand_env_vars(path: &str) -> String {
 }
 
 fn execute_command(command_name: &str, args: Vec<String>) {
-    let output = Command::new(command_name)
-        .args(&args)
-        .output()
-        .expect("Failed to execute command");
-    if output.status.success() {
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-    } else {
-        eprint!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    match Command::new(command_name).args(&args).output() {
+        Ok(output) if output.status.success() => {
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+        Ok(output) => {
+            eprint!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Err(e) => {
+            eprintln!("error: failed to run {command_name}: {e}");
+        }
     }
 }
 
