@@ -1,0 +1,17 @@
+default-task "backup"
+
+tasks {
+    task "backup" {
+        description "Sample backup task for development"
+        backup {
+            repo "/tmp/vivo-dev-repo"
+            directory "/tmp/vivo-test-data"
+            retention {
+                daily 7
+                weekly 5
+                monthly 12
+                yearly 2
+            }
+        }
+    }
+}
