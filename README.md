@@ -16,6 +16,23 @@ Vivo is a CLI wrapper around [restic](https://restic.net) that orchestrates back
 
 ## Install
 
+### One-line install (Linux and macOS)
+
+```sh
+curl -sSf https://raw.githubusercontent.com/dantuck/vivo/main/install.sh | sh
+```
+
+Downloads the latest binary from GitHub Releases, verifies the SHA256 checksum, and installs to `/usr/local/bin/vivo` (or `~/.local/bin` if not writable). Set `VIVO_INSTALL_DIR` to override the destination.
+
+### Self-update
+
+```sh
+vivo update          # update to latest release
+vivo update --dry-run  # preview without applying
+```
+
+vivo also checks for updates in the background once per 24 hours and prints a notice after a backup run if a newer version is available.
+
 ### From Cargo
 
 ```sh
@@ -213,6 +230,20 @@ remote "b2:my-bucket:restic/main" {
     credentials "b2"
 }
 ```
+
+## Releasing
+
+Releases are automated via [Release Please](https://github.com/googleapis/release-please). On every merge to `main`, Release Please scans commits since the last release and opens (or updates) a release PR that bumps `Cargo.toml` and updates `CHANGELOG.md`. Merging that PR creates a version tag, which triggers the build workflow to produce binaries for Linux (x86_64, aarch64) and macOS (aarch64) and publish them as a GitHub Release.
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Prefix | Version bump |
+|---|---|
+| `fix:` | patch (0.1.0 → 0.1.1) |
+| `feat:` | minor (0.1.0 → 0.2.0) |
+| `feat!:` or `BREAKING CHANGE:` | major (0.1.0 → 1.0.0) |
+
+No manual tagging or version editing is required.
 
 ## License
 
