@@ -46,10 +46,11 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
   HAS_SHA256=false
 fi
 
-# Fetch latest release version
+# Fetch latest release version (includes pre-releases since 0.x may be flagged as such)
 echo "Fetching latest vivo release..."
-VERSION=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" \
+VERSION=$(curl -sSf "https://api.github.com/repos/${REPO}/releases" \
   | grep '"tag_name"' \
+  | head -1 \
   | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')
 
 if [ -z "$VERSION" ] || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+'; then
