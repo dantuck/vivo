@@ -4,7 +4,7 @@ use std::{fs, io};
 
 use crate::config::xdg_config_home;
 
-pub const GITHUB_REPO_OWNER: &str = "tuck";
+pub const GITHUB_REPO_OWNER: &str = "dantuck";
 pub const GITHUB_REPO_NAME: &str = "vivo";
 const CHECK_INTERVAL_SECS: u64 = 86_400;
 

@@ -2,7 +2,7 @@
 # install.sh — download and install the latest vivo binary from GitHub Releases
 set -e
 
-REPO="tuck/vivo"
+REPO="dantuck/vivo"
 INSTALL_DIR="${VIVO_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture

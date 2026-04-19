@@ -17,5 +17,5 @@ jobs:
 
       - name: Push mirror to GitHub
         run: |
-          git remote add github "https://x-access-token:${{ secrets.GITHUB_PAT }}@github.com/tuck/vivo.git"
+          git remote add github "https://x-access-token:${{ secrets.GITHUB_PAT }}@github.com/dantuck/vivo.git"
           git push github --mirror
