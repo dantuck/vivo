@@ -72,6 +72,10 @@ fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> 
 }
 
 impl Backup {
+    pub(crate) fn remotes(&self) -> &[Remote] {
+        &self.remotes
+    }
+
     fn backup(&self, dry_run: bool) -> Result<(), String> {
         let mut args = vec![
             "backup".to_string(),

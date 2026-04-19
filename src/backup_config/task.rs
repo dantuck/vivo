@@ -64,6 +64,13 @@ fn run_call(
 }
 
 impl Task {
+    pub(crate) fn backup_remotes(&self) -> Vec<(&str, &str)> {
+        match &self.backup {
+            Some(b) => b.remotes().iter().map(|r| (r.url.as_str(), r.credentials.as_str())).collect(),
+            None => vec![],
+        }
+    }
+
     pub fn run(
         &self,
         config: &VivoConfig,

@@ -34,6 +34,10 @@ pub fn decrypt_sops_file(file_path: &str) -> Result<String, String> {
 }
 
 impl BackupConfig {
+    pub fn all_remotes(&self) -> Vec<(&str, &str)> {
+        self.tasks.iter().flat_map(|t| t.backup_remotes()).collect()
+    }
+
     pub fn load_config(config: &VivoConfig) -> Result<(BackupConfig, Secrets), String> {
         let config_path = config.get_config_path();
         let config_content = fs::read_to_string(&config_path)
@@ -65,5 +69,78 @@ impl BackupConfig {
             config_path.cyan()
         );
         Ok((document, secrets))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(src: &str) -> BackupConfig {
+        knuffel::parse::<BackupConfig>("test", src).unwrap()
+    }
+
+    #[test]
+    fn all_remotes_returns_url_and_credentials() {
+        let cfg = parse(r#"
+            default-task "t"
+            tasks {
+                task "t" {
+                    backup {
+                        repo "/tmp/repo"
+                        directory "/tmp"
+                        remote "s3:http://example.com/bucket" {
+                            credentials "aws"
+                        }
+                    }
+                }
+            }
+        "#);
+        let remotes = cfg.all_remotes();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].0, "s3:http://example.com/bucket");
+        assert_eq!(remotes[0].1, "aws");
+    }
+
+    #[test]
+    fn all_remotes_empty_when_no_backup() {
+        let cfg = parse(r#"
+            default-task "t"
+            tasks {
+                task "t" {
+                    command "echo hi"
+                }
+            }
+        "#);
+        assert!(cfg.all_remotes().is_empty());
+    }
+
+    #[test]
+    fn all_remotes_collects_across_tasks() {
+        let cfg = parse(r#"
+            default-task "a"
+            tasks {
+                task "a" {
+                    backup {
+                        repo "/tmp/r1"
+                        directory "/tmp"
+                        remote "s3:http://s3.example.com/b1" {
+                            credentials "aws"
+                        }
+                    }
+                }
+                task "b" {
+                    backup {
+                        repo "/tmp/r2"
+                        directory "/tmp"
+                        remote "b2:bucket:path" {
+                            credentials "b2"
+                        }
+                    }
+                }
+            }
+        "#);
+        let remotes = cfg.all_remotes();
+        assert_eq!(remotes.len(), 2);
     }
 }
