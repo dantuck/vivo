@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/dantuck/vivo/compare/vivo-v0.2.0...vivo-v0.2.1) (2026-04-19)
+
+
+### Bug Fixes
+
+* set tag-name to v${version} so releases use v0.x.x format ([9b939cc](https://github.com/dantuck/vivo/commit/9b939ccb5befcc50fde53e65108d17be2f92beb4))
+* use releases list endpoint to support pre-release versions ([2c1f260](https://github.com/dantuck/vivo/commit/2c1f260cb3e888ac45647edb755c4d85f3c760c4))
+
 ## [0.2.0](https://github.com/dantuck/vivo/compare/vivo-v0.1.0...vivo-v0.2.0) (2026-04-19)
 
 
