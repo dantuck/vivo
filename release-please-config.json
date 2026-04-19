@@ -2,7 +2,8 @@
   "packages": {
     ".": {
       "release-type": "rust",
-      "bump-minor-pre-major": true
+      "bump-minor-pre-major": true,
+      "tag-name": "v${version}"
     }
   }
 }
