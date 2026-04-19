@@ -175,6 +175,18 @@ fn cmd_doctor(config_path: &str, secrets_path: &str) {
     std::process::exit(exit_code);
 }
 
+fn cmd_update(dry_run: bool) {
+    if let Err(e) = vivo::update::apply_update(dry_run) {
+        let msg = e.to_string();
+        if msg.contains("Permission denied") || msg.contains("Access is denied") {
+            eprintln!("error: cannot replace binary — try: sudo vivo update");
+        } else {
+            eprintln!("error: update failed: {msg}");
+        }
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -213,15 +225,17 @@ fn main() {
             return;
         }
         Some(("update", _)) => {
-            // update subcommand wired in Task 8
-            eprintln!("error: update not yet implemented");
-            std::process::exit(1);
+            let dry_run = matches.get_flag("dry-run");
+            cmd_update(dry_run);
+            return;
         }
         _ => {}
     }
 
     let vivo_config = VivoConfig::from_matches(&matches);
     debug!("{:?}", vivo_config);
+
+    let update_notice = vivo::update::maybe_check_update();
 
     match BackupConfig::load_config(&vivo_config) {
         Ok((backup_config, secrets)) => {
@@ -236,5 +250,9 @@ fn main() {
             }
         }
         Err(e) => eprintln!("error: {e}"),
+    }
+
+    if let Some(ref latest) = update_notice {
+        vivo::update::print_update_notice(latest);
     }
 }
