@@ -12,9 +12,7 @@ readme = "README.md"
 repository = "https://codeberg.org/tuck/vivo"
 resolver = "2"
 rust-version = "1.80.1"
-description = """
-[WIP] Vivo - restic backup w/ sync to b2
-"""
+description = "restic backup orchestrator with multi-remote sync and SOPS-encrypted secrets"
 
 [dependencies]
 knuffel = "3.2.0"
@@ -22,11 +20,14 @@ clap = { version = "4.3.13", features = ["cargo"] }
 colored = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yml = "0.0.12"
-miette = { version = "7.2.0", features = ["fancy"] }
 regex = "1.10.6"
 env_logger = "0.11.5"
 log = "0.4.22"
 term_size = "0.3.2"
+self_update = { version = "0.40", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [[bin]]
 name = "vivo"

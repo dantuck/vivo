@@ -14,7 +14,7 @@ pub fn section_header(message: &str) {
 
     // Calculate the number of dashes needed to fill the remaining space
     let message_len = message.len();
-    let dashes_needed = line_length.saturating_sub(prefix_dashes.len() + message_len + 10); // +10 for " Running task [] "
+    let dashes_needed = line_length.saturating_sub(prefix_dashes.len() + message_len + 2);
 
     let task_message = format!(
         "{} {} {}",

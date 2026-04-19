@@ -1,103 +1,125 @@
 use clap::{arg, command, value_parser, Arg, ArgAction, Command};
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::str::FromStr;
 use std::{env, path::PathBuf};
+
+use crate::step::Step;
 
 #[derive(Debug)]
 pub struct VivoConfig {
     pub task_name: Option<String>,
-    config_file: Option<PathBuf>,
-    // subcommand: Option<SubcommandConfig>,
+    pub config_file: Option<PathBuf>,
     pub dry_run: bool,
+    pub start_step: Step,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Secrets {
     pub restic_password: String,
+    #[serde(default)]
+    pub credentials: HashMap<String, HashMap<String, String>>,
 }
 
-// #[derive(Debug)]
-// struct SubcommandConfig {
-//     list: bool,
-// }
+fn parse_step(s: &str) -> Result<Step, String> {
+    Step::from_str(s)
+}
 
-impl VivoConfig {
-    pub fn from_args() -> Self {
-        let matches = command!() // requires `cargo` feature
-            .arg(arg!([task_name] "Optional task name to operate on"))
-            .arg(
-                arg!(
-                    -c --config <FILE> "Sets a custom config file"
-                )
-                // We don't have syntax yet for optional options, so manually calling `required`
+pub fn build_cli() -> Command {
+    command!()
+        .arg(arg!([task_name] "Optional task name to operate on"))
+        .arg(
+            arg!(-c --config <FILE> "Sets a custom config file")
                 .required(false)
                 .value_parser(value_parser!(PathBuf)),
-            )
-            .arg(arg!(
-                -d --debug ... "Turn debugging information on"
-            ))
-            .arg(
-                Arg::new("dry-run")
-                    .long("dry-run")
-                    .help("Perform a dry run without making any changes")
-                    .action(clap::ArgAction::SetTrue),
-            )
-            .subcommand(
-                Command::new("test")
-                    .about("does testing things")
-                    .arg(arg!(-l --list "lists test values").action(ArgAction::SetTrue)),
-            )
-            .get_matches();
+        )
+        .arg(arg!(-d --debug ... "Turn debugging information on"))
+        .arg(
+            Arg::new("dry-run")
+                .long("dry-run")
+                .help("Perform a dry run without making any changes")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("start-step")
+                .long("start-step")
+                .short('S')
+                .help("Start at step: backup, check, forget, sync")
+                .value_parser(parse_step)
+                .required(false),
+        )
+        .subcommand(Command::new("init").about("Set up vivo for first use"))
+        .subcommand(
+            Command::new("config")
+                .about("Manage backup configuration")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(Command::new("init").about("Create a new config file"))
+                .subcommand(Command::new("edit").about("Open config in $EDITOR"))
+                .subcommand(Command::new("show").about("Print config to stdout")),
+        )
+        .subcommand(
+            Command::new("secrets")
+                .about("Manage encrypted secrets")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(Command::new("init").about("Create and encrypt a new secrets file"))
+                .subcommand(Command::new("edit").about("Edit secrets with sops"))
+                .subcommand(Command::new("show").about("Decrypt and print secrets")),
+        )
+        .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
+        .subcommand(Command::new("update").about("Update vivo to the latest release"))
+}
 
-        let task_name = matches.get_one::<String>("task_name").cloned();
-        let config_file = matches.get_one::<PathBuf>("config").cloned();
-        // let debug = matches.get_one::<u8>("debug").copied().unwrap_or(0);
-        let dry_run = matches.get_one::<bool>("dry-run").copied().unwrap_or(false);
+pub fn xdg_config_home() -> PathBuf {
+    env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env::var("HOME").expect("HOME environment variable must be set"))
+                .join(".config")
+        })
+}
 
-        // let subcommand = matches
-        //     .subcommand_matches("test")
-        //     .map(|sub_matches| SubcommandConfig {
-        //         list: sub_matches.get_flag("list"),
-        //     });
-
+impl VivoConfig {
+    pub fn from_matches(matches: &clap::ArgMatches) -> Self {
         VivoConfig {
-            task_name,
-            config_file,
-            // subcommand,
-            dry_run,
+            task_name: matches.get_one::<String>("task_name").cloned(),
+            config_file: matches.get_one::<PathBuf>("config").cloned(),
+            dry_run: matches.get_flag("dry-run"),
+            start_step: matches
+                .get_one::<Step>("start-step")
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 
     pub fn get_config_path(&self) -> String {
-        self.config_file.clone().map_or_else(
-            || {
-                if let Ok(backup_config) = env::var("VIVO_BACKUP_CONFIG") {
-                    backup_config
-                } else if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
-                    format!("{}/vivo/backup.kdl", xdg_config_home)
-                } else {
-                    // Fall back to user's home directory
-                    format!("{}/.config/vivo/backup.kdl", env::var("HOME").unwrap())
-                }
-            },
-            |path| path.to_string_lossy().into_owned(),
-        )
+        config_path_from(self.config_file.as_ref())
     }
 
     pub fn get_secrets_path(&self) -> String {
-        self.config_file.clone().map_or_else(
-            || {
-                if let Ok(backup_config) = env::var("VIVO_BACKUP_SECRETS") {
-                    backup_config
-                } else if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME")
-                {
-                    // Both XDG_CONFIG_HOME and DOTS exist
-                    format!("{}/vivo/secrets.yaml", xdg_config_home)
-                } else {
-                    // Fall back to user's home directory
-                    format!("{}/.config/vivo/secrets.yaml", env::var("HOME").unwrap())
-                }
-            },
-            |path| path.to_string_lossy().into_owned(),
-        )
+        secrets_path_from()
     }
+}
+
+pub fn config_path_from(config_file: Option<&PathBuf>) -> String {
+    config_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| {
+            env::var("VIVO_BACKUP_CONFIG").unwrap_or_else(|_| {
+                xdg_config_home()
+                    .join("vivo/backup.kdl")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+}
+
+pub fn secrets_path_from() -> String {
+    env::var("VIVO_BACKUP_SECRETS").unwrap_or_else(|_| {
+        xdg_config_home()
+            .join("vivo/secrets.yaml")
+            .to_string_lossy()
+            .into_owned()
+    })
 }
