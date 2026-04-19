@@ -67,6 +67,8 @@ pub fn build_cli() -> Command {
                 .subcommand(Command::new("edit").about("Edit secrets with sops"))
                 .subcommand(Command::new("show").about("Decrypt and print secrets")),
         )
+        .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
+        .subcommand(Command::new("update").about("Update vivo to the latest release"))
 }
 
 pub fn xdg_config_home() -> PathBuf {

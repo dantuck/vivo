@@ -1,7 +1,7 @@
 use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
-    build_cli, config_path_from, decrypt_sops_file, secrets_path_from, xdg_config_home,
+    build_cli, config_path_from, decrypt_sops_file, secrets_path_from,
     BackupConfig, VivoConfig,
 };
 
@@ -33,21 +33,6 @@ tasks {
 "#;
 
 const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
-
-fn check_tool(name: &str) -> bool {
-    process::Command::new(name)
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn check_age_key() -> bool {
-    if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
-        return Path::new(&p).exists();
-    }
-    xdg_config_home().join("sops/age/keys.txt").exists()
-}
 
 fn open_in_editor(path: &str) {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
@@ -155,28 +140,18 @@ fn cmd_secrets_show(secrets_path: &str) {
 fn cmd_init(config_path: &str, secrets_path: &str) {
     println!("Checking prerequisites...");
 
+    let checks = [
+        vivo::doctor::check_tool_present("restic", "version", "install from https://restic.net"),
+        vivo::doctor::check_tool_present("sops", "--version", "install from https://github.com/getsops/sops"),
+        vivo::doctor::check_age_key(),
+    ];
+
     let mut ok = true;
-
-    if check_tool("restic") {
-        println!("  [ok] restic");
-    } else {
-        eprintln!("  [missing] restic — install from https://restic.net");
-        ok = false;
-    }
-
-    if check_tool("sops") {
-        println!("  [ok] sops");
-    } else {
-        eprintln!("  [missing] sops — install from https://github.com/getsops/sops");
-        ok = false;
-    }
-
-    if check_age_key() {
-        println!("  [ok] age key");
-    } else {
-        eprintln!("  [missing] age key — generate with: age-keygen -o ~/.config/sops/age/keys.txt");
-        eprintln!("            then add the public key to .sops.yaml in your config directory");
-        ok = false;
+    for r in &checks {
+        vivo::doctor::print_result(r);
+        if matches!(r.status, vivo::doctor::CheckStatus::Fail) {
+            ok = false;
+        }
     }
 
     if !ok {
@@ -193,6 +168,11 @@ fn cmd_init(config_path: &str, secrets_path: &str) {
     println!("  1. Edit your backup config:  vivo config edit");
     println!("  2. Set your restic password: vivo secrets edit");
     println!("  3. Run a dry-run backup:     vivo --dry-run");
+}
+
+fn cmd_doctor(config_path: &str, secrets_path: &str) {
+    let exit_code = vivo::doctor::run_doctor(config_path, secrets_path);
+    std::process::exit(exit_code);
 }
 
 fn main() {
@@ -227,6 +207,15 @@ fn main() {
                 _ => unreachable!(),
             }
             return;
+        }
+        Some(("doctor", _)) => {
+            cmd_doctor(&config_path, &secrets_path);
+            return;
+        }
+        Some(("update", _)) => {
+            // update subcommand wired in Task 8
+            eprintln!("error: update not yet implemented");
+            std::process::exit(1);
         }
         _ => {}
     }
