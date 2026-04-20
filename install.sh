@@ -84,10 +84,21 @@ fi
 # Extract binary
 tar -xzf "${TMP_DIR}/${ASSET}" -C "$TMP_DIR"
 
-# Install
+# Install: prefer INSTALL_DIR, fall back to ~/.local/bin, then sudo
+do_install() {
+  local dest="$1"
+  mkdir -p "$dest"
+  mv "${TMP_DIR}/vivo" "${dest}/vivo"
+  chmod +x "${dest}/vivo"
+  INSTALL_DIR="$dest"
+}
+
 if [ -w "$INSTALL_DIR" ]; then
-  mv "${TMP_DIR}/vivo" "${INSTALL_DIR}/vivo"
-  chmod +x "${INSTALL_DIR}/vivo"
+  do_install "$INSTALL_DIR"
+elif [ -z "${VIVO_INSTALL_DIR:-}" ]; then
+  LOCAL_BIN="${HOME}/.local/bin"
+  echo "Installing to ${LOCAL_BIN} (${INSTALL_DIR} not writable)..."
+  do_install "$LOCAL_BIN"
 else
   echo "Installing to ${INSTALL_DIR} requires elevated permissions..."
   sudo mv "${TMP_DIR}/vivo" "${INSTALL_DIR}/vivo"
