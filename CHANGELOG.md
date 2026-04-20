@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/dantuck/vivo/compare/v0.3.1...v0.3.2) (2026-04-20)
+
+
+### Bug Fixes
+
+* fall back to ~/.local/bin when install dir is not writable ([0019e31](https://github.com/dantuck/vivo/commit/0019e31e85db161e92e07ac3c8ae76b293b2e933))
+
 ## [0.3.1](https://github.com/dantuck/vivo/compare/v0.3.0...v0.3.1) (2026-04-20)
 
 
