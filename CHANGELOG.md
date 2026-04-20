@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/dantuck/vivo/compare/v0.3.0...v0.3.1) (2026-04-20)
+
+
+### Bug Fixes
+
+* update repository URL to GitHub primary remote ([d41921a](https://github.com/dantuck/vivo/commit/d41921ac8bb8717ebdda25adecf5ecf71d586f6b))
+* use include-component-in-tag false so release tags use v${version} format ([c200892](https://github.com/dantuck/vivo/commit/c200892bfedbb01e713f2bf09038833a3544412d))
+
 ## [0.3.0](https://github.com/dantuck/vivo/compare/vivo-v0.2.0...vivo-v0.3.0) (2026-04-20)
 
 
