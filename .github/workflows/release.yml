@@ -3,6 +3,11 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and attach assets to (e.g. v0.3.1)'
+        required: true
 
 permissions:
   contents: write
@@ -30,6 +35,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -55,7 +62,7 @@ jobs:
       - name: Package tarball
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${{ github.event.inputs.tag || github.event.release.tag_name }}"
           ASSET="vivo-${VERSION}-${{ matrix.target }}.tar.gz"
           cp "target/${{ matrix.target }}/release/vivo" vivo
           tar czf "$ASSET" vivo
