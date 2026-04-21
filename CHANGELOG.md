@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/dantuck/vivo/compare/v0.4.0...v0.4.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* pass --repo to gh workflow run so it works without a checkout ([5f83063](https://github.com/dantuck/vivo/commit/5f830631415b7b4c3ac651de55ca94de5dd5b226))
+
 ## [0.4.0](https://github.com/dantuck/vivo/compare/v0.3.2...v0.4.0) (2026-04-21)
 
 
