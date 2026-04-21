@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/dantuck/vivo/compare/v0.4.1...v0.4.2) (2026-04-21)
+
+
+### Bug Fixes
+
+* skip releases with no assets when finding latest version ([22e7295](https://github.com/dantuck/vivo/commit/22e7295fffebedbfe5d216eeef330b97a561ad11))
+
 ## [0.4.1](https://github.com/dantuck/vivo/compare/v0.4.0...v0.4.1) (2026-04-21)
 
 
