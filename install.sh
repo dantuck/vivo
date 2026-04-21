@@ -46,26 +46,28 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
   HAS_SHA256=false
 fi
 
-# Fetch latest release that has published assets
+# Fetch the latest release that has the asset for this platform ready.
+# Iterates releases newest-first, skipping any that don't yet have the binary.
 echo "Fetching latest vivo release..."
 RELEASES_JSON=$(curl -sSf "https://api.github.com/repos/${REPO}/releases")
 
-# Find the first release whose assets array is non-empty.
-# Walk release objects: skip until we see "assets" followed by at least one
-# entry, then grab the tag_name from the same object.
-VERSION=$(printf '%s' "$RELEASES_JSON" | awk '
-  /"tag_name"/ { tag = $0; sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"v/, "", tag); sub(/".*/, "", tag) }
-  /"assets"/ { in_assets = 1; asset_count = 0 }
-  in_assets && /"browser_download_url"/ { asset_count++ }
-  in_assets && /^\s*\]/ {
-    in_assets = 0
-    if (asset_count > 0 && version == "") { version = tag }
-  }
-  END { print version }
-')
+VERSION=""
+for candidate in $(printf '%s' "$RELEASES_JSON" \
+    | grep '"tag_name"' \
+    | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/'); do
+  if ! echo "$candidate" | grep -qE '^[0-9]+\.[0-9]+'; then
+    continue
+  fi
+  asset_name="vivo-v${candidate}-${TARGET}.tar.gz"
+  asset_url="https://github.com/${REPO}/releases/download/v${candidate}/${asset_name}"
+  if curl -sSfI "$asset_url" >/dev/null 2>&1; then
+    VERSION="$candidate"
+    break
+  fi
+done
 
-if [ -z "$VERSION" ] || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+'; then
-  echo "error: could not determine latest version (no release with assets found)" >&2
+if [ -z "$VERSION" ]; then
+  echo "error: could not find a release with assets for ${TARGET}" >&2
   exit 1
 fi
 
