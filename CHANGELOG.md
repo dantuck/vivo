@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/dantuck/vivo/compare/v0.4.2...v0.4.3) (2026-04-21)
+
+
+### Bug Fixes
+
+* probe asset URL to skip releases whose binaries are not yet published ([18dd901](https://github.com/dantuck/vivo/commit/18dd901085ef0dea915899a22f7c2b4dcda9a959))
+
 ## [0.4.2](https://github.com/dantuck/vivo/compare/v0.4.1...v0.4.2) (2026-04-21)
 
 
