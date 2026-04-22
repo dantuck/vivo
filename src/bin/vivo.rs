@@ -2,7 +2,7 @@ use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
     build_cli, config_path_from, decrypt_sops_file, secrets_path_from,
-    BackupConfig, VivoConfig,
+    xdg_config_home, BackupConfig, VivoConfig,
 };
 
 const CONFIG_TEMPLATE: &str = r#"default-task "backup"
@@ -88,6 +88,22 @@ fn cmd_config_show(config_path: &str) {
     }
 }
 
+fn age_public_key() -> Option<String> {
+    let keys_path = if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
+        p
+    } else {
+        xdg_config_home()
+            .join("sops/age/keys.txt")
+            .to_string_lossy()
+            .into_owned()
+    };
+    let contents = fs::read_to_string(&keys_path).ok()?;
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("# public key: "))
+        .map(str::to_owned)
+}
+
 fn cmd_secrets_init(secrets_path: &str) {
     if Path::new(secrets_path).exists() {
         println!("Secrets file already exists: {secrets_path}");
@@ -98,6 +114,11 @@ fn cmd_secrets_init(secrets_path: &str) {
         return;
     }
 
+    let Some(recipient) = age_public_key() else {
+        eprintln!("error: no age key found — run: age-keygen -o ~/.config/sops/age/keys.txt");
+        return;
+    };
+
     let tmp_path = env::temp_dir().join("vivo-secrets-init.tmp");
     if let Err(e) = fs::write(&tmp_path, SECRETS_TEMPLATE) {
         eprintln!("error: could not write secrets template: {e}");
@@ -106,6 +127,8 @@ fn cmd_secrets_init(secrets_path: &str) {
 
     let output = process::Command::new("sops")
         .arg("-e")
+        .arg("--age")
+        .arg(&recipient)
         .arg("--output")
         .arg(secrets_path)
         .arg(&tmp_path)

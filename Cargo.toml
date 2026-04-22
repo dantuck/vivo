@@ -39,4 +39,3 @@ test = true
 bench = true
 doc = true
 harness = true
-edition = "2021"
