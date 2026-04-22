@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/dantuck/vivo/compare/v0.4.3...v0.4.4) (2026-04-22)
+
+
+### Bug Fixes
+
+* remove mac builds ([32e1094](https://github.com/dantuck/vivo/commit/32e1094a7e8396b53df5e22bccd976518d960c50))
+
 ## [0.4.3](https://github.com/dantuck/vivo/compare/v0.4.2...v0.4.3) (2026-04-21)
 
 
