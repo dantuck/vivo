@@ -117,3 +117,17 @@ jobs:
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Trigger marketing site rebuild
+        run: |
+          git clone https://x-access-token:${GH_TOKEN}@github.com/dantuck/vivo-marketing.git
+          cd vivo-marketing
+          echo "${VERSION}" > src/_version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/_version
+          git commit -m "chore: release ${VERSION}"
+          git push
+        env:
+          GH_TOKEN: ${{ secrets.MARKETING_DEPLOY_TOKEN }}
+          VERSION: ${{ github.event.inputs.tag || github.event.release.tag_name }}
