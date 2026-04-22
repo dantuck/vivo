@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build and attach assets to (e.g. v0.3.1)'
+        description: "Tag to build and attach assets to (e.g. v0.3.1)"
         required: true
 
 permissions:
@@ -29,9 +29,9 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
-          - target: aarch64-apple-darwin
-            os: macos-13
-            use_cross: false
+          # - target: aarch64-apple-darwin
+          #   os: macos-15
+          #   use_cross: false
 
     steps:
       - uses: actions/checkout@v5

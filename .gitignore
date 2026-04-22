@@ -1,3 +1,5 @@
 /target
 *.kdl
 !sample.kdl
+.remember/
+docs/superpowers/
