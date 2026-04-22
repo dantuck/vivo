@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/dantuck/vivo/compare/v0.4.4...v0.4.5) (2026-04-22)
+
+
+### Bug Fixes
+
+* pass age recipient key to sops during secrets init ([983f7ad](https://github.com/dantuck/vivo/commit/983f7ade590c9964ce8a94411d1e03f74b534d27))
+
 ## [0.4.4](https://github.com/dantuck/vivo/compare/v0.4.3...v0.4.4) (2026-04-22)
 
 
