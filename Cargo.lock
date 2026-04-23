@@ -1957,6 +1957,7 @@ dependencies = [
  "regex",
  "self_update",
  "serde",
+ "serde_json",
  "serde_yml",
  "tempfile",
  "term_size",

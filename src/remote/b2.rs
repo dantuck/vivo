@@ -1,7 +1,13 @@
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 use super::RemoteBackend;
+
+fn is_auth_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("unauthorized") || lower.contains("invalid credentials") || lower.contains("401")
+}
 
 pub struct B2Backend {
     pub(super) bucket: String,
@@ -15,11 +21,51 @@ impl B2Backend {
             .ok_or_else(|| format!("not a b2 URL: '{url}'"))?;
         let (bucket, path) = without_prefix
             .split_once(':')
-            .ok_or_else(|| format!("invalid b2 URL '{url}'. expected: b2:<bucket>:<path>"))?;
+            .unwrap_or((without_prefix, ""));
         Ok(B2Backend {
             bucket: bucket.to_string(),
             path: path.to_string(),
         })
+    }
+}
+
+impl B2Backend {
+    fn execute_sync(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        let remote_url = format!("b2://{}/{}", self.bucket, self.path);
+        let mut child = Command::new("b2")
+            .args([
+                "sync",
+                "--delete",
+                "--replace-newer",
+                "--compare-versions",
+                "size",
+                local_repo,
+                &remote_url,
+            ])
+            .envs(env)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to run b2: {e}"))?;
+
+        let stderr_reader = BufReader::new(child.stderr.take().unwrap());
+        let stderr_thread = std::thread::spawn(move || {
+            let mut collected = String::new();
+            for line in stderr_reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                collected.push_str(&line);
+                collected.push('\n');
+            }
+            collected
+        });
+
+        let status = child.wait().map_err(|e| format!("failed to wait for b2: {e}"))?;
+        let stderr = stderr_thread.join().unwrap_or_default();
+
+        if !status.success() {
+            return Err(format!("b2 sync to {remote_url} failed: {stderr}"));
+        }
+        Ok(())
     }
 }
 
@@ -54,26 +100,18 @@ impl RemoteBackend for B2Backend {
 
         super::verify_restic_repo(local_repo)?;
 
-        let remote_url = format!("b2://{}/{}", self.bucket, self.path);
-        let output = Command::new("b2")
-            .args([
-                "sync",
-                "--delete",
-                "--replace-newer",
-                "--compare-versions",
-                "size",
-                local_repo,
-                &remote_url,
-            ])
-            .envs(env)
-            .output()
-            .map_err(|e| format!("failed to run b2: {e}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("b2 sync to {remote_url} failed: {stderr}"));
+        match self.execute_sync(local_repo, env) {
+            Ok(()) => Ok(()),
+            Err(ref e) if is_auth_error(e) => {
+                eprintln!("\n[!] B2 authentication failed — starting re-authorization...\n");
+                let secrets_path = crate::config::secrets_path_from();
+                let new_creds = crate::import_b2_credentials(&secrets_path)
+                    .map_err(|e| format!("re-authorization failed: {e}"))?;
+                eprintln!();
+                self.execute_sync(local_repo, &new_creds)
+            }
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 }
 
@@ -89,8 +127,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_colon_separator() {
-        assert!(B2Backend::from_url("b2:my-bucket").is_err());
+    fn accepts_bucket_only() {
+        let b = B2Backend::from_url("b2:my-bucket").unwrap();
+        assert_eq!(b.bucket, "my-bucket");
+        assert_eq!(b.path, "");
     }
 
     #[test]

@@ -138,18 +138,31 @@ impl Backup {
 
     fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) {
         let local_repo = expand_env_vars(&self.repo);
+        let mut creds_cache: HashMap<String, HashMap<String, String>> = credentials.clone();
 
         for remote in &self.remotes {
-            let creds = match credentials.get(&remote.credentials) {
-                Some(c) => c,
-                None => {
+            if !creds_cache.contains_key(&remote.credentials) {
+                if remote.url.starts_with("b2:") {
+                    eprintln!("\n[!] B2 credentials not found — starting authorization...\n");
+                    let secrets_path = crate::config::secrets_path_from();
+                    match crate::import_b2_credentials(&secrets_path) {
+                        Ok(new_creds) => {
+                            creds_cache.insert(remote.credentials.clone(), new_creds);
+                        }
+                        Err(e) => {
+                            eprintln!("error: re-authorization failed: {e} — skipping remote {}", remote.url);
+                            continue;
+                        }
+                    }
+                } else {
                     eprintln!(
                         "error: credentials profile '{}' not found in secrets — skipping remote {}",
                         remote.credentials, remote.url
                     );
                     continue;
                 }
-            };
+            }
+            let creds = creds_cache.get(&remote.credentials).unwrap();
 
             let backend = match crate::remote::from_url(&remote.url) {
                 Ok(b) => b,

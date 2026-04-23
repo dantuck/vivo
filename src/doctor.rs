@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 use std::{env, fs, process};
 
-use crate::backup_config::{decrypt_sops_file, BackupConfig};
+use crate::backup_config::{decrypt_sops_file, parse_secrets, BackupConfig};
 use crate::config::{xdg_config_home, Secrets};
 
 pub enum CheckStatus {
@@ -108,10 +108,9 @@ pub fn check_config(config_path: &str) -> CheckResult {
 }
 
 pub fn check_secrets(secrets_path: &str) -> Option<Secrets> {
-    match decrypt_sops_file(secrets_path) {
-        Err(_) => None,
-        Ok(yaml) => serde_yml::from_str::<Secrets>(&yaml).ok(),
-    }
+    decrypt_sops_file(secrets_path)
+        .ok()
+        .and_then(|yaml| parse_secrets(&yaml).ok())
 }
 
 pub fn check_secrets_present(secrets_path: &str) -> CheckResult {
@@ -122,7 +121,7 @@ pub fn check_secrets_present(secrets_path: &str) -> CheckResult {
             status: CheckStatus::Fail,
             detail: Some(format!("{e} — run `vivo secrets init`")),
         },
-        Ok(yaml) => match serde_yml::from_str::<Secrets>(&yaml) {
+        Ok(yaml) => match parse_secrets(&yaml) {
             Err(e) => CheckResult {
                 label,
                 status: CheckStatus::Fail,

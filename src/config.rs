@@ -65,7 +65,8 @@ pub fn build_cli() -> Command {
                 .arg_required_else_help(true)
                 .subcommand(Command::new("init").about("Create and encrypt a new secrets file"))
                 .subcommand(Command::new("edit").about("Edit secrets with sops"))
-                .subcommand(Command::new("show").about("Decrypt and print secrets")),
+                .subcommand(Command::new("show").about("Decrypt and print secrets"))
+                .subcommand(Command::new("import-b2").about("Authorize with b2 and import credentials into secrets")),
         )
         .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
         .subcommand(Command::new("update").about("Update vivo to the latest release"))

@@ -1,8 +1,8 @@
 use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
-    build_cli, config_path_from, decrypt_sops_file, secrets_path_from,
-    xdg_config_home, BackupConfig, VivoConfig,
+    age_public_key, build_cli, config_path_from, decrypt_sops_file,
+    import_b2_credentials, secrets_path_from, BackupConfig, VivoConfig,
 };
 
 const CONFIG_TEMPLATE: &str = r#"default-task "backup"
@@ -88,22 +88,6 @@ fn cmd_config_show(config_path: &str) {
     }
 }
 
-fn age_public_key() -> Option<String> {
-    let keys_path = if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
-        p
-    } else {
-        xdg_config_home()
-            .join("sops/age/keys.txt")
-            .to_string_lossy()
-            .into_owned()
-    };
-    let contents = fs::read_to_string(&keys_path).ok()?;
-    contents
-        .lines()
-        .find_map(|line| line.strip_prefix("# public key: "))
-        .map(str::to_owned)
-}
-
 fn cmd_secrets_init(secrets_path: &str) {
     if Path::new(secrets_path).exists() {
         println!("Secrets file already exists: {secrets_path}");
@@ -142,6 +126,17 @@ fn cmd_secrets_init(secrets_path: &str) {
         }
         Ok(o) => eprintln!("error: sops encryption failed: {}", String::from_utf8_lossy(&o.stderr)),
         Err(e) => eprintln!("error: could not run sops: {e}"),
+    }
+}
+
+fn cmd_secrets_import_b2(secrets_path: &str) {
+    if !Path::new(secrets_path).exists() {
+        eprintln!("Secrets file not found. Run `vivo secrets init` first.");
+        return;
+    }
+    match import_b2_credentials(secrets_path) {
+        Ok(_) => println!("B2 credentials imported successfully."),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 
@@ -239,6 +234,7 @@ fn main() {
                 Some(("init", _)) => cmd_secrets_init(&secrets_path),
                 Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
                 Some(("show", _)) => cmd_secrets_show(&secrets_path),
+                Some(("import-b2", _)) => cmd_secrets_import_b2(&secrets_path),
                 _ => unreachable!(),
             }
             return;
