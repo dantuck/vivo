@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/dantuck/vivo/compare/v0.4.5...v0.5.0) (2026-04-23)
+
+
+### Features
+
+* add B2 credential import with automatic re-auth on backup failure ([92028c2](https://github.com/dantuck/vivo/commit/92028c242aab660946e235941ea60d80a1de0c5e))
+
 ## [0.4.5](https://github.com/dantuck/vivo/compare/v0.4.4...v0.4.5) (2026-04-22)
 
 
