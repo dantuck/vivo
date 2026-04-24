@@ -156,6 +156,7 @@ fn cmd_secrets_show(secrets_path: &str) {
 }
 
 fn cmd_init(config_path: &str, secrets_path: &str) {
+    vivo::ui::print_banner();
     println!("Checking prerequisites...");
 
     let checks = [
@@ -207,6 +208,11 @@ fn cmd_update(dry_run: bool) {
 
 fn main() {
     env_logger::init();
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
+        vivo::ui::print_banner();
+    }
 
     let matches = build_cli().get_matches();
 
