@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/dantuck/vivo/compare/v0.5.0...v0.6.0) (2026-04-24)
+
+
+### Features
+
+* add dot-matrix banner to --help, help, and init commands ([8e0976b](https://github.com/dantuck/vivo/commit/8e0976b86b0e2ac698d6e2cd75f98e880c95d581))
+
 ## [0.5.0](https://github.com/dantuck/vivo/compare/v0.4.5...v0.5.0) (2026-04-23)
 
 
