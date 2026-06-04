@@ -138,7 +138,7 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
 
     let mut state = ListState::default();
     if !remotes.is_empty() && app.focused_pane == Pane::Remotes {
-        state.select(Some(app.selected_remote));
+        state.select(Some(app.selected_remote.min(remotes.len() - 1)));
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
 }
