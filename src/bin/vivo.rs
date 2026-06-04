@@ -22,6 +22,9 @@ tasks {
                 yearly 2
             }
             // Add remotes here, e.g.:
+            // remote "rustfs:http://your-nas:9000/backup" {
+            //     credentials "rustfs"
+            // }
             // remote "s3:https://s3.amazonaws.com/my-bucket" {
             //     credentials "aws"
             // }
@@ -138,6 +141,39 @@ fn cmd_secrets_import_b2(secrets_path: &str) {
     match import_b2_credentials(secrets_path) {
         Ok(_) => println!("B2 credentials imported successfully."),
         Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+fn cmd_secrets_import_s3(secrets_path: &str, matches: &clap::ArgMatches) {
+    if !Path::new(secrets_path).exists() {
+        eprintln!("Secrets file not found. Run `vivo secrets init` first.");
+        return;
+    }
+
+    let interactive = std::io::stdin().is_terminal();
+
+    let key_id = require_or_prompt(matches, "key-id", "Access key ID (AWS_ACCESS_KEY_ID):", interactive);
+    let key = require_or_prompt(matches, "key", "Secret access key (AWS_SECRET_ACCESS_KEY):", interactive);
+    let profile = matches
+        .get_one::<String>("profile")
+        .cloned()
+        .unwrap_or_else(|| {
+            if interactive {
+                inquire::Text::new("Profile name:")
+                    .with_default("s3")
+                    .prompt()
+                    .unwrap_or_else(|_| process::exit(0))
+            } else {
+                "s3".to_string()
+            }
+        });
+
+    match vivo::update_s3_in_secrets(secrets_path, &profile, &key_id, &key) {
+        Ok(()) => println!("S3 credentials saved to profile '{profile}'."),
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
     }
 }
 
@@ -517,6 +553,7 @@ fn main() {
                 Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
                 Some(("show", _)) => cmd_secrets_show(&secrets_path),
                 Some(("import-b2", _)) => cmd_secrets_import_b2(&secrets_path),
+                Some(("import-s3", args)) => cmd_secrets_import_s3(&secrets_path, args),
                 _ => unreachable!(),
             }
             return;

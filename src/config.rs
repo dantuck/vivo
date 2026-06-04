@@ -66,7 +66,30 @@ pub fn build_cli() -> Command {
                 .subcommand(Command::new("init").about("Create and encrypt a new secrets file"))
                 .subcommand(Command::new("edit").about("Edit secrets with sops"))
                 .subcommand(Command::new("show").about("Decrypt and print secrets"))
-                .subcommand(Command::new("import-b2").about("Authorize with b2 and import credentials into secrets")),
+                .subcommand(Command::new("import-b2").about("Authorize with b2 and import credentials into secrets"))
+                .subcommand(
+                    Command::new("import-s3")
+                        .about("Import S3-compatible credentials (AWS S3, RustFS, MinIO) into secrets")
+                        .arg(
+                            Arg::new("key-id")
+                                .long("key-id")
+                                .value_name("KEY_ID")
+                                .help("AWS_ACCESS_KEY_ID / access key ID"),
+                        )
+                        .arg(
+                            Arg::new("key")
+                                .long("key")
+                                .value_name("KEY")
+                                .help("AWS_SECRET_ACCESS_KEY / secret access key"),
+                        )
+                        .arg(
+                            Arg::new("profile")
+                                .long("profile")
+                                .short('p')
+                                .value_name("PROFILE")
+                                .help("Credential profile name to use in backup config (default: s3)"),
+                        ),
+                ),
         )
         .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
         .subcommand(Command::new("update").about("Update vivo to the latest release"))
