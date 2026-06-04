@@ -19,7 +19,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(outer[0]);
 
     draw_tasks(f, app, panes[0]);
-    draw_remotes(f, app, panes[1]);
+    draw_task_detail(f, app, panes[1]);
     draw_help(f, app, outer[1]);
 }
 
@@ -49,41 +49,110 @@ fn draw_tasks(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_remotes(f: &mut Frame, app: &App, area: Rect) {
+fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
     let task_name = app
         .tasks
         .get(app.selected_task)
         .map(|t| t.name.as_str())
-        .unwrap_or("—");
+        .unwrap_or("\u{2014}");
     let title = format!(" Task: {task_name} ");
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focused_border(app.focused_pane == Pane::Remotes));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .split(inner);
+
+    draw_task_fields(f, app, chunks[0]);
+    draw_remotes_list(f, app, chunks[1]);
+}
+
+fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
+    let task = match app.tasks.get(app.selected_task) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let label = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+
+    let field = |name: &'static str, val: Option<&str>| -> Line<'static> {
+        let value_span = match val {
+            Some(v) if !v.is_empty() => Span::raw(v.to_string()),
+            _ => Span::styled("(none)", dim),
+        };
+        Line::from(vec![
+            Span::styled(format!("{name:<14}"), label),
+            value_span,
+        ])
+    };
+
+    let lines = vec![
+        field("Name", Some(task.name.as_str())),
+        field("Description", task.description.as_deref()),
+        field("Repo", task.repo.as_deref()),
+        field("Directory", task.directory.as_deref()),
+        field("Exclude file", task.exclude_file.as_deref()),
+        field("Files from", task.files_from.as_deref()),
+    ];
+
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
     let remotes = app.current_remotes();
+    let count = remotes.len();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let header_style = if app.focused_pane == Pane::Remotes {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("Remotes ({count}):"),
+            header_style,
+        )])),
+        chunks[0],
+    );
+
     let items: Vec<ListItem> = remotes
         .iter()
-        .map(|r| ListItem::new(format!("{}  [{}]", r.url, r.credentials)))
+        .map(|r| ListItem::new(format!("  {}  [{}]", r.url, r.credentials)))
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(focused_border(app.focused_pane == Pane::Remotes)),
-        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    if !remotes.is_empty() {
+    if !remotes.is_empty() && app.focused_pane == Pane::Remotes {
         state.select(Some(app.selected_remote));
     }
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, chunks[1], &mut state);
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let status = app
-        .status_message
-        .as_deref()
-        .unwrap_or("[a] add  [d] delete  [e] edit in $EDITOR  [Tab] switch pane  [q] quit");
+    let default_hint = match app.focused_pane {
+        Pane::Tasks => {
+            "[a] add  [d] delete  [e] edit task  [o] open in $EDITOR  [Tab] switch pane  [q] quit"
+        }
+        Pane::Remotes => {
+            "[a] add remote  [d] delete  [e] edit remote  [Tab] switch pane  [q] quit"
+        }
+    };
+    let status = app.status_message.as_deref().unwrap_or(default_hint);
     let para = Paragraph::new(Line::from(vec![Span::raw(format!(" {status}"))]))
         .style(Style::default().fg(Color::DarkGray));
     f.render_widget(para, area);
