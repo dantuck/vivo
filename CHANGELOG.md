@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0](https://github.com/dantuck/vivo/compare/v0.6.0...v0.7.0) (2026-06-04)
+
+
+### Features
+
+* add update_s3_in_secrets, expose backup_remotes and description on Task ([93bbcd7](https://github.com/dantuck/vivo/commit/93bbcd79fcfb4ac87a5cd85438fc7826a01ea7f1))
+* **cli:** add vivo remote add/list/remove subcommands ([b01702b](https://github.com/dantuck/vivo/commit/b01702b0ce6a5634a21360803e0143fe46b50b75))
+* **cli:** add vivo secrets import-s3 and update CONFIG_TEMPLATE with rustfs example ([4a4220b](https://github.com/dantuck/vivo/commit/4a4220bb423a0ac04892682df47426ecc89c0c98))
+* **cli:** add vivo task add/list/remove subcommands ([871571e](https://github.com/dantuck/vivo/commit/871571e488e4e4a2006e9a7c4ac399a85671dbe1))
+* **config-editor:** add TaskSpec, RemoteSpec, and add_task ([44b5d81](https://github.com/dantuck/vivo/commit/44b5d81d364700b92e99eb40f0ad60b21f2c1dce))
+* **config-editor:** implement add_remote ([2c76e07](https://github.com/dantuck/vivo/commit/2c76e07ec44849987e566d2a32761d0e5076157a))
+* **config-editor:** implement remove_remote and re-export all editor functions ([6f26a7a](https://github.com/dantuck/vivo/commit/6f26a7a5dab51c669f1ce6bae7529fdea4c973c5))
+* **config-editor:** implement remove_task ([fd10c20](https://github.com/dantuck/vivo/commit/fd10c20c88bae0f07b8d2ff3b548a968b1248096))
+* **remote:** add rustfs: URL prefix alias for S3-compatible remotes ([f858874](https://github.com/dantuck/vivo/commit/f8588746cb478b23fe31a993ed4beb42432b95ff))
+* **tui:** add vivo manage skeleton with stub render and quit key ([37694ea](https://github.com/dantuck/vivo/commit/37694eae5dda6ec0be5505f0e19651782d887a99))
+* **tui:** implement full event handling — navigate, add, delete, edit in vivo manage ([06dfc85](https://github.com/dantuck/vivo/commit/06dfc85022caab5f3d7411e2034aaa0b0d9efd0a))
+* **tui:** implement two-pane layout with task list and remote detail ([51e451b](https://github.com/dantuck/vivo/commit/51e451b3537cc44f710a4d93024300e2551d718d))
+
+
+### Bug Fixes
+
+* **tui:** reload app state after editing config in $EDITOR ([5603004](https://github.com/dantuck/vivo/commit/5603004680616e5488fa8bc9f52aae8ed965cc1d))
+
 ## [0.6.0](https://github.com/dantuck/vivo/compare/v0.5.0...v0.6.0) (2026-04-24)
 
 
