@@ -193,9 +193,10 @@ fn delete_remote_prompt(app: &App) -> Result<String, String> {
     Ok(format!("Removed remote '{url}'."))
 }
 
-fn handle_edit(app: &App) {
+fn handle_edit(app: &mut App) {
     suspend_tui();
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     let _ = process::Command::new(&editor).arg(&app.config_path).status();
     resume_tui();
+    app.reload();
 }
