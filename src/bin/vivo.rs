@@ -344,6 +344,144 @@ fn cmd_task_remove(config_path: &str, matches: &clap::ArgMatches) {
     }
 }
 
+fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
+    let interactive = std::io::stdin().is_terminal();
+
+    let task = match matches.get_one::<String>("task") {
+        Some(t) => t.clone(),
+        None if !interactive => {
+            eprintln!("error: --task is required in non-interactive mode");
+            process::exit(1);
+        }
+        None => {
+            let default_suggestion = fs::read_to_string(config_path)
+                .ok()
+                .and_then(|c| {
+                    knuffel::parse::<vivo::BackupConfig>(config_path, &c)
+                        .ok()
+                        .map(|cfg| cfg.default_task)
+                })
+                .unwrap_or_default();
+
+            inquire::Text::new("Task name:")
+                .with_default(&default_suggestion)
+                .prompt()
+                .unwrap_or_else(|_| process::exit(0))
+        }
+    };
+
+    let url = require_or_prompt(
+        matches,
+        "url",
+        "Remote URL (e.g. rustfs:http://nas:9000/bucket):",
+        interactive,
+    );
+    let credentials = require_or_prompt(
+        matches,
+        "credentials",
+        "Credentials profile name (must exist in secrets):",
+        interactive,
+    );
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials }) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Added remote '{url}' to task '{task}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_remote_list(config_path: &str, matches: &clap::ArgMatches) {
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    if let Some(task_filter) = matches.get_one::<String>("task") {
+        let remotes = config.remotes_for_task(task_filter);
+        if remotes.is_empty() {
+            println!("No remotes for task '{task_filter}'.");
+        } else {
+            for (url, creds) in remotes {
+                println!("{url}  [{creds}]");
+            }
+        }
+    } else {
+        for task in &config.tasks {
+            let remotes = task.backup_remotes();
+            if !remotes.is_empty() {
+                println!("{}:", task.name);
+                for (url, creds) in remotes {
+                    println!("  {url}  [{creds}]");
+                }
+            }
+        }
+    }
+}
+
+fn cmd_remote_remove(config_path: &str, matches: &clap::ArgMatches) {
+    let task = matches.get_one::<String>("task").expect("task is required").clone();
+    let url = matches.get_one::<String>("url").expect("url is required").clone();
+
+    if std::io::stdin().is_terminal() {
+        let confirmed =
+            inquire::Confirm::new(&format!("Remove remote '{url}' from task '{task}'?"))
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+    }
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::remove_remote(&kdl, &task, &url) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Removed remote '{url}' from task '{task}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -388,6 +526,15 @@ fn main() {
                 Some(("add", args)) => cmd_task_add(&config_path, args),
                 Some(("list", _)) => cmd_task_list(&config_path),
                 Some(("remove", args)) => cmd_task_remove(&config_path, args),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("remote", sub)) => {
+            match sub.subcommand() {
+                Some(("add", args)) => cmd_remote_add(&config_path, args),
+                Some(("list", args)) => cmd_remote_list(&config_path, args),
+                Some(("remove", args)) => cmd_remote_remove(&config_path, args),
                 _ => unreachable!(),
             }
             return;

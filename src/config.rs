@@ -96,6 +96,42 @@ pub fn build_cli() -> Command {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("remote")
+                .about("Manage backup remotes")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("add")
+                        .about("Add a remote to a task")
+                        .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Task name"))
+                        .arg(Arg::new("url").long("url").short('u').value_name("URL").help("Remote URL"))
+                        .arg(
+                            Arg::new("credentials")
+                                .long("credentials")
+                                .short('c')
+                                .value_name("PROFILE")
+                                .help("Credentials profile name from secrets"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List remotes (all tasks, or filter with --task)")
+                        .arg(
+                            Arg::new("task")
+                                .long("task")
+                                .short('t')
+                                .value_name("TASK")
+                                .help("Filter by task name"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a remote from a task")
+                        .arg(Arg::new("task").long("task").short('t').value_name("TASK").required(true))
+                        .arg(Arg::new("url").long("url").short('u').value_name("URL").required(true)),
+                ),
+        )
 }
 
 pub fn xdg_config_home() -> PathBuf {
