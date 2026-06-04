@@ -111,6 +111,53 @@ pub fn remove_task(kdl: &str, name: &str) -> Result<String, String> {
     Ok(doc.to_string())
 }
 
+pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+
+    let backup = task
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "backup")
+        .ok_or_else(|| {
+            format!(
+                "task '{task_name}' has no backup block — add one with `vivo config edit`"
+            )
+        })?;
+
+    let backup_children = backup.ensure_children();
+
+    if backup_children
+        .nodes()
+        .iter()
+        .any(|n| n.name().value() == "remote" && first_arg(n) == Some(spec.url.as_str()))
+    {
+        return Err(format!(
+            "remote '{}' already exists on task '{task_name}'",
+            spec.url
+        ));
+    }
+
+    let mut remote = KdlNode::new("remote");
+    remote.push(str_entry(&spec.url));
+    remote
+        .ensure_children()
+        .nodes_mut()
+        .push(str_node("credentials", &spec.credentials));
+
+    backup_children.nodes_mut().push(remote);
+
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +268,75 @@ tasks {
     fn remove_task_errors_when_not_found() {
         let err = remove_task(TWO_TASKS_KDL, "nonexistent").unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn add_remote_appends_remote_to_backup_block() {
+        let result = add_remote(
+            BASE_KDL,
+            "backup",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "rustfs".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"remote "rustfs:http://nas:9000/bucket""#));
+        assert!(result.contains(r#"credentials "rustfs""#));
+    }
+
+    #[test]
+    fn add_remote_rejects_duplicate_url() {
+        let with_remote = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            remote "s3:http://example.com/b" {
+                credentials "aws"
+            }
+        }
+    }
+}
+"#;
+        let err = add_remote(
+            with_remote,
+            "backup",
+            RemoteSpec {
+                url: "s3:http://example.com/b".to_string(),
+                credentials: "aws".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn add_remote_errors_when_task_not_found() {
+        let err = add_remote(
+            BASE_KDL,
+            "nonexistent",
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+        )
+        .unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn add_remote_errors_when_no_backup_block() {
+        let no_backup = r#"default-task "cmd"
+tasks {
+    task "cmd" {
+        command "echo hi"
+    }
+}
+"#;
+        let err = add_remote(
+            no_backup,
+            "cmd",
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+        )
+        .unwrap_err();
+        assert!(err.contains("backup block"));
     }
 }
