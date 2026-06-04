@@ -8,6 +8,11 @@ pub enum Pane {
 
 pub struct TaskEntry {
     pub name: String,
+    pub description: Option<String>,
+    pub repo: Option<String>,
+    pub directory: Option<String>,
+    pub exclude_file: Option<String>,
+    pub files_from: Option<String>,
     pub remotes: Vec<RemoteEntry>,
 }
 
@@ -33,6 +38,11 @@ impl App {
             .iter()
             .map(|t| TaskEntry {
                 name: t.name.clone(),
+                description: t.description().map(str::to_owned),
+                repo: t.backup_repo().map(str::to_owned),
+                directory: t.backup_directory().map(str::to_owned),
+                exclude_file: t.backup_exclude_file().map(str::to_owned),
+                files_from: t.backup_files_from().map(str::to_owned),
                 remotes: t
                     .backup_remotes()
                     .into_iter()
