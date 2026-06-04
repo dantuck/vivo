@@ -49,6 +49,8 @@ fn update_str_child(doc: &mut KdlDocument, name: &str, value: &str) {
     if let Some(node) = doc.nodes_mut().iter_mut().find(|n| n.name().value() == name) {
         if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
             *entry = str_entry(value);
+        } else {
+            node.push(str_entry(value));
         }
     } else {
         doc.nodes_mut().push(str_node(name, value));
@@ -56,11 +58,20 @@ fn update_str_child(doc: &mut KdlDocument, name: &str, value: &str) {
 }
 
 fn upsert_or_remove_child(doc: &mut KdlDocument, name: &str, value: Option<&str>) {
-    doc.nodes_mut().retain(|n| n.name().value() != name);
     if let Some(v) = value {
         if !v.is_empty() {
+            if let Some(node) = doc.nodes_mut().iter_mut().find(|n| n.name().value() == name) {
+                if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+                    *entry = str_entry(v);
+                }
+                return;
+            }
             doc.nodes_mut().push(str_node(name, v));
+        } else {
+            doc.nodes_mut().retain(|n| n.name().value() != name);
         }
+    } else {
+        doc.nodes_mut().retain(|n| n.name().value() != name);
     }
 }
 
@@ -662,6 +673,26 @@ tasks {
         assert!(!result.contains("backup"));
     }
 
+    #[test]
+    fn edit_task_renames_non_default_task_leaves_default_task_unchanged() {
+        let result = edit_task(
+            WITH_CALLS_KDL,
+            "secondary",
+            EditTaskSpec {
+                name: "mirror".to_string(),
+                description: None,
+                repo: None,
+                directory: None,
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"default-task "backup""#));
+        assert!(result.contains(r#"task "mirror""#));
+        assert!(!result.contains(r#"task "secondary""#));
+    }
+
     const WITH_REMOTE_KDL: &str = r#"default-task "backup"
 tasks {
     task "backup" {
@@ -692,5 +723,41 @@ tasks {
     fn remove_remote_errors_when_task_not_found() {
         let err = remove_remote(WITH_REMOTE_KDL, "ghost", "s3:http://example.com/b").unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn edit_task_preserves_remote_order_when_updating_directory() {
+        let kdl_with_dir_and_remote = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            directory "/old/dir"
+            remote "s3:http://example.com/b" {
+                credentials "aws"
+            }
+        }
+    }
+}
+"#;
+        let result = edit_task(
+            kdl_with_dir_and_remote,
+            "backup",
+            EditTaskSpec {
+                name: "backup".to_string(),
+                description: None,
+                repo: Some("/tmp/repo".to_string()),
+                directory: Some("/new/dir".to_string()),
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        let dir_pos = result.find("directory").unwrap();
+        let remote_pos = result.find("remote").unwrap();
+        assert!(
+            dir_pos < remote_pos,
+            "directory should precede remote in output"
+        );
     }
 }
