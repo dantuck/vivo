@@ -158,6 +158,37 @@ pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String
     Ok(doc.to_string())
 }
 
+pub fn remove_remote(kdl: &str, task_name: &str, url: &str) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+
+    let backup = task
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "backup")
+        .ok_or_else(|| format!("task '{task_name}' has no backup block"))?;
+
+    let backup_children = backup.ensure_children();
+    let before = backup_children.nodes().len();
+    backup_children
+        .nodes_mut()
+        .retain(|n| !(n.name().value() == "remote" && first_arg(n) == Some(url)));
+
+    if backup_children.nodes().len() == before {
+        return Err(format!("remote '{url}' not found on task '{task_name}'"));
+    }
+
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +369,37 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("backup block"));
+    }
+
+    const WITH_REMOTE_KDL: &str = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            remote "s3:http://example.com/b" {
+                credentials "aws"
+            }
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn remove_remote_removes_by_url() {
+        let result = remove_remote(WITH_REMOTE_KDL, "backup", "s3:http://example.com/b").unwrap();
+        assert!(!result.contains(r#"remote "s3:http://example.com/b""#));
+        assert!(result.contains(r#"task "backup""#));
+    }
+
+    #[test]
+    fn remove_remote_errors_when_url_not_found() {
+        let err = remove_remote(WITH_REMOTE_KDL, "backup", "s3:http://other.com/b").unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn remove_remote_errors_when_task_not_found() {
+        let err = remove_remote(WITH_REMOTE_KDL, "ghost", "s3:http://example.com/b").unwrap_err();
+        assert!(err.contains("not found"));
     }
 }
