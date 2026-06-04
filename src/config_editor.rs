@@ -334,7 +334,7 @@ pub fn edit_remote(
         .nodes_mut()
         .iter_mut()
         .find(|n| n.name().value() == "backup")
-        .ok_or_else(|| format!("task '{task_name}' has no backup block"))?;
+        .ok_or_else(|| format!("task '{task_name}' has no backup block — add one with `vivo config edit`"))?;
 
     let remote = backup
         .ensure_children()
@@ -849,5 +849,24 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn edit_remote_errors_when_no_backup_block() {
+        let no_backup = r#"default-task "cmd"
+tasks {
+    task "cmd" {
+        command "echo hi"
+    }
+}
+"#;
+        let err = edit_remote(
+            no_backup,
+            "cmd",
+            "s3:http://x",
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+        )
+        .unwrap_err();
+        assert!(err.contains("backup block"));
     }
 }
