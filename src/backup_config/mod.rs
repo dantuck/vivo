@@ -90,6 +90,74 @@ fn update_b2_in_secrets(secrets_path: &str, key_id: &str, key: &str) -> Result<(
     }
 }
 
+pub fn update_s3_in_secrets(
+    secrets_path: &str,
+    profile: &str,
+    key_id: &str,
+    key: &str,
+) -> Result<(), String> {
+    let decrypted = decrypt_sops_file(secrets_path)?;
+
+    #[derive(serde::Deserialize)]
+    struct DataWrapper {
+        data: String,
+    }
+    let inner_yaml = match serde_yml::from_str::<DataWrapper>(&decrypted) {
+        Ok(w) => w.data,
+        Err(_) => decrypted,
+    };
+
+    let mut doc: serde_yml::Value = serde_yml::from_str(&inner_yaml)
+        .map_err(|e| format!("could not parse secrets: {e}"))?;
+
+    let credentials = doc
+        .get_mut("credentials")
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or("secrets missing 'credentials' map")?;
+
+    let entry = credentials
+        .entry(serde_yml::Value::String(profile.to_string()))
+        .or_insert(serde_yml::Value::Mapping(serde_yml::Mapping::new()));
+
+    let entry_map = entry
+        .as_mapping_mut()
+        .ok_or_else(|| format!("'credentials.{profile}' is not a map"))?;
+
+    entry_map.insert(
+        serde_yml::Value::String("AWS_ACCESS_KEY_ID".to_string()),
+        serde_yml::Value::String(key_id.to_string()),
+    );
+    entry_map.insert(
+        serde_yml::Value::String("AWS_SECRET_ACCESS_KEY".to_string()),
+        serde_yml::Value::String(key.to_string()),
+    );
+
+    let updated_yaml = serde_yml::to_string(&doc)
+        .map_err(|e| format!("could not serialize secrets: {e}"))?;
+
+    let recipient = age_public_key()
+        .ok_or("no age key found — run: age-keygen -o ~/.config/sops/age/keys.txt")?;
+
+    let tmp_path = env::temp_dir().join("vivo-secrets-import-s3.yaml");
+    fs::write(&tmp_path, &updated_yaml)
+        .map_err(|e| format!("could not write temp file: {e}"))?;
+
+    let result = SysCommand::new("sops")
+        .args(["-e", "--age", &recipient, "--output", secrets_path])
+        .arg(&tmp_path)
+        .output();
+    let _ = fs::remove_file(&tmp_path);
+
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!(
+            "sops encryption failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        )),
+        Err(e) => Err(format!("could not run sops: {e}")),
+    }
+}
+
 /// Runs `b2 account authorize` interactively, reads the resulting credentials,
 /// persists them to `secrets_path`, and returns the credential map for immediate use.
 pub fn import_b2_credentials(secrets_path: &str) -> Result<HashMap<String, String>, String> {
@@ -171,6 +239,14 @@ pub fn parse_secrets(decrypted_yaml: &str) -> Result<Secrets, String> {
 impl BackupConfig {
     pub fn all_remotes(&self) -> Vec<(&str, &str)> {
         self.tasks.iter().flat_map(|t| t.backup_remotes()).collect()
+    }
+
+    pub fn remotes_for_task(&self, task_name: &str) -> Vec<(&str, &str)> {
+        self.tasks
+            .iter()
+            .filter(|t| t.name == task_name)
+            .flat_map(|t| t.backup_remotes())
+            .collect()
     }
 
     pub fn load_config(config: &VivoConfig) -> Result<(BackupConfig, Secrets), String> {

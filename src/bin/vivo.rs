@@ -1,3 +1,4 @@
+use is_terminal::IsTerminal;
 use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
@@ -21,6 +22,9 @@ tasks {
                 yearly 2
             }
             // Add remotes here, e.g.:
+            // remote "rustfs:http://your-nas:9000/backup" {
+            //     credentials "rustfs"
+            // }
             // remote "s3:https://s3.amazonaws.com/my-bucket" {
             //     credentials "aws"
             // }
@@ -140,6 +144,39 @@ fn cmd_secrets_import_b2(secrets_path: &str) {
     }
 }
 
+fn cmd_secrets_import_s3(secrets_path: &str, matches: &clap::ArgMatches) {
+    if !Path::new(secrets_path).exists() {
+        eprintln!("Secrets file not found. Run `vivo secrets init` first.");
+        return;
+    }
+
+    let interactive = std::io::stdin().is_terminal();
+
+    let key_id = require_or_prompt(matches, "key-id", "Access key ID (AWS_ACCESS_KEY_ID):", interactive);
+    let key = require_or_prompt(matches, "key", "Secret access key (AWS_SECRET_ACCESS_KEY):", interactive);
+    let profile = matches
+        .get_one::<String>("profile")
+        .cloned()
+        .unwrap_or_else(|| {
+            if interactive {
+                inquire::Text::new("Profile name:")
+                    .with_default("s3")
+                    .prompt()
+                    .unwrap_or_else(|_| process::exit(0))
+            } else {
+                "s3".to_string()
+            }
+        });
+
+    match vivo::update_s3_in_secrets(secrets_path, &profile, &key_id, &key) {
+        Ok(()) => println!("S3 credentials saved to profile '{profile}'."),
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn cmd_secrets_edit(secrets_path: &str) {
     if !Path::new(secrets_path).exists() {
         eprintln!("Secrets file not found. Run `vivo secrets init` first.");
@@ -206,6 +243,281 @@ fn cmd_update(dry_run: bool) {
     }
 }
 
+fn require_or_prompt(
+    matches: &clap::ArgMatches,
+    flag: &str,
+    prompt: &str,
+    interactive: bool,
+) -> String {
+    if let Some(v) = matches.get_one::<String>(flag) {
+        return v.clone();
+    }
+    if !interactive {
+        eprintln!("error: --{flag} is required in non-interactive mode");
+        process::exit(1);
+    }
+    inquire::Text::new(prompt)
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0))
+}
+
+fn get_or_prompt_opt(
+    matches: &clap::ArgMatches,
+    flag: &str,
+    prompt: &str,
+    interactive: bool,
+) -> Option<String> {
+    if let Some(v) = matches.get_one::<String>(flag) {
+        return Some(v.clone());
+    }
+    if !interactive {
+        return None;
+    }
+    let val = inquire::Text::new(prompt)
+        .with_help_message("Leave blank to skip")
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0));
+    if val.is_empty() { None } else { Some(val) }
+}
+
+fn cmd_task_add(config_path: &str, matches: &clap::ArgMatches) {
+    let interactive = std::io::stdin().is_terminal();
+    let name = require_or_prompt(matches, "name", "Task name:", interactive);
+    let repo = require_or_prompt(
+        matches,
+        "repo",
+        "Restic repo path (e.g. $HOME/.local/share/restic/main):",
+        interactive,
+    );
+    let directory = get_or_prompt_opt(matches, "dir", "Directory to back up:", interactive);
+    let exclude_file =
+        get_or_prompt_opt(matches, "exclude-file", "Exclude file path:", interactive);
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: could not read config '{config_path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo, directory, exclude_file }) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: could not write config: {e}");
+                process::exit(1);
+            }
+            println!("Added task '{name}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_task_list(config_path: &str) {
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: could not read config '{config_path}': {e}");
+            process::exit(1);
+        }
+    };
+    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    for task in &config.tasks {
+        if let Some(desc) = task.description() {
+            println!("{} — {}", task.name, desc);
+        } else {
+            println!("{}", task.name);
+        }
+    }
+}
+
+fn cmd_task_remove(config_path: &str, matches: &clap::ArgMatches) {
+    let name = matches
+        .get_one::<String>("name")
+        .expect("name is required")
+        .clone();
+
+    if std::io::stdin().is_terminal() {
+        let confirmed = inquire::Confirm::new(&format!("Remove task '{name}'?"))
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+    }
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::remove_task(&kdl, &name) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Removed task '{name}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
+    let interactive = std::io::stdin().is_terminal();
+
+    let task = match matches.get_one::<String>("task") {
+        Some(t) => t.clone(),
+        None if !interactive => {
+            eprintln!("error: --task is required in non-interactive mode");
+            process::exit(1);
+        }
+        None => {
+            let default_suggestion = fs::read_to_string(config_path)
+                .ok()
+                .and_then(|c| {
+                    knuffel::parse::<vivo::BackupConfig>(config_path, &c)
+                        .ok()
+                        .map(|cfg| cfg.default_task)
+                })
+                .unwrap_or_default();
+
+            inquire::Text::new("Task name:")
+                .with_default(&default_suggestion)
+                .prompt()
+                .unwrap_or_else(|_| process::exit(0))
+        }
+    };
+
+    let url = require_or_prompt(
+        matches,
+        "url",
+        "Remote URL (e.g. rustfs:http://nas:9000/bucket):",
+        interactive,
+    );
+    let credentials = require_or_prompt(
+        matches,
+        "credentials",
+        "Credentials profile name (must exist in secrets):",
+        interactive,
+    );
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials }) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Added remote '{url}' to task '{task}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_remote_list(config_path: &str, matches: &clap::ArgMatches) {
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    if let Some(task_filter) = matches.get_one::<String>("task") {
+        let remotes = config.remotes_for_task(task_filter);
+        if remotes.is_empty() {
+            println!("No remotes for task '{task_filter}'.");
+        } else {
+            for (url, creds) in remotes {
+                println!("{url}  [{creds}]");
+            }
+        }
+    } else {
+        for task in &config.tasks {
+            let remotes = task.backup_remotes();
+            if !remotes.is_empty() {
+                println!("{}:", task.name);
+                for (url, creds) in remotes {
+                    println!("  {url}  [{creds}]");
+                }
+            }
+        }
+    }
+}
+
+fn cmd_remote_remove(config_path: &str, matches: &clap::ArgMatches) {
+    let task = matches.get_one::<String>("task").expect("task is required").clone();
+    let url = matches.get_one::<String>("url").expect("url is required").clone();
+
+    if std::io::stdin().is_terminal() {
+        let confirmed =
+            inquire::Confirm::new(&format!("Remove remote '{url}' from task '{task}'?"))
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+    }
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::remove_remote(&kdl, &task, &url) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Removed remote '{url}' from task '{task}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -241,7 +553,33 @@ fn main() {
                 Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
                 Some(("show", _)) => cmd_secrets_show(&secrets_path),
                 Some(("import-b2", _)) => cmd_secrets_import_b2(&secrets_path),
+                Some(("import-s3", args)) => cmd_secrets_import_s3(&secrets_path, args),
                 _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("task", sub)) => {
+            match sub.subcommand() {
+                Some(("add", args)) => cmd_task_add(&config_path, args),
+                Some(("list", _)) => cmd_task_list(&config_path),
+                Some(("remove", args)) => cmd_task_remove(&config_path, args),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("remote", sub)) => {
+            match sub.subcommand() {
+                Some(("add", args)) => cmd_remote_add(&config_path, args),
+                Some(("list", args)) => cmd_remote_list(&config_path, args),
+                Some(("remove", args)) => cmd_remote_remove(&config_path, args),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("manage", _)) => {
+            if let Err(e) = vivo::tui::run(&config_path) {
+                eprintln!("error: {e}");
+                process::exit(1);
             }
             return;
         }

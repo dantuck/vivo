@@ -17,6 +17,8 @@ description = "restic backup orchestrator with multi-remote sync and SOPS-encryp
 [dependencies]
 knuffel = "3.2.0"
 clap = { version = "4.3.13", features = ["cargo"] }
+inquire = "0.7"
+is-terminal = "0.4"
 colored = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yml = "0.0.12"
@@ -26,6 +28,9 @@ env_logger = "0.11.5"
 log = "0.4.22"
 term_size = "0.3.2"
 self_update = { version = "0.40", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
+kdl = "6.7.1"
+ratatui = { version = "0.30.0", features = ["crossterm"] }
+crossterm = "0.28"
 
 [dev-dependencies]
 tempfile = "3"
