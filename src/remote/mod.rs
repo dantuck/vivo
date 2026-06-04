@@ -42,9 +42,12 @@ pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
         Ok(Box::new(B2Backend::from_url(url)?))
     } else if url.starts_with("s3:") {
         Ok(Box::new(S3Backend::from_url(url)?))
+    } else if url.starts_with("rustfs:") {
+        let s3_url = url.replacen("rustfs:", "s3:", 1);
+        Ok(Box::new(S3Backend::from_url(&s3_url)?))
     } else {
         Err(format!(
-            "unsupported remote URL '{url}'. supported prefixes: b2:, s3:"
+            "unsupported remote URL '{url}'. supported prefixes: b2:, s3:, rustfs:"
         ))
     }
 }
@@ -69,5 +72,17 @@ mod tests {
     fn rejects_unknown_prefix() {
         let err = from_url("sftp:user@host:/backup").err().unwrap();
         assert!(err.contains("b2:, s3:"));
+    }
+
+    #[test]
+    fn routes_rustfs_prefix() {
+        let b = from_url("rustfs:http://nas:9000/backup").unwrap();
+        assert_eq!(b.name(), "s3");
+    }
+
+    #[test]
+    fn rejects_unknown_prefix_mentions_rustfs() {
+        let err = from_url("sftp:user@host:/backup").err().unwrap();
+        assert!(err.contains("rustfs:"));
     }
 }
