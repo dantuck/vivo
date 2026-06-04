@@ -29,6 +29,8 @@ log = "0.4.22"
 term_size = "0.3.2"
 self_update = { version = "0.40", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 kdl = "6.7.1"
+ratatui = { version = "0.30.0", features = ["crossterm"] }
+crossterm = "0.28"
 
 [dev-dependencies]
 tempfile = "3"

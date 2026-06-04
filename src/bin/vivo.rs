@@ -576,6 +576,13 @@ fn main() {
             }
             return;
         }
+        Some(("manage", _)) => {
+            if let Err(e) = vivo::tui::run(&config_path) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            return;
+        }
         Some(("doctor", _)) => {
             cmd_doctor(&config_path, &secrets_path);
             return;

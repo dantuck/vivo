@@ -93,6 +93,7 @@ pub fn build_cli() -> Command {
         )
         .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
         .subcommand(Command::new("update").about("Update vivo to the latest release"))
+        .subcommand(Command::new("manage").about("Open the interactive config manager (TUI)"))
         .subcommand(
             Command::new("task")
                 .about("Manage backup tasks")
