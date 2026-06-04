@@ -76,6 +76,22 @@ impl Backup {
         &self.remotes
     }
 
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    pub fn directory(&self) -> Option<&str> {
+        self.directory.as_deref()
+    }
+
+    pub fn exclude_file(&self) -> Option<&str> {
+        self.exclude_file.as_deref()
+    }
+
+    pub fn files_from(&self) -> Option<&str> {
+        self.files_from.as_deref()
+    }
+
     fn backup(&self, dry_run: bool) -> Result<(), String> {
         let mut args = vec![
             "backup".to_string(),

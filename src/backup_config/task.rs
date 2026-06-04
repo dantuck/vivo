@@ -71,6 +71,22 @@ impl Task {
         }
     }
 
+    pub fn backup_repo(&self) -> Option<&str> {
+        self.backup.as_ref().map(|b| b.repo())
+    }
+
+    pub fn backup_directory(&self) -> Option<&str> {
+        self.backup.as_ref().and_then(|b| b.directory())
+    }
+
+    pub fn backup_exclude_file(&self) -> Option<&str> {
+        self.backup.as_ref().and_then(|b| b.exclude_file())
+    }
+
+    pub fn backup_files_from(&self) -> Option<&str> {
+        self.backup.as_ref().and_then(|b| b.files_from())
+    }
+
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
