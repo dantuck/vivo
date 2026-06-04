@@ -12,6 +12,15 @@ pub struct RemoteSpec {
     pub credentials: String,
 }
 
+pub struct EditTaskSpec {
+    pub name: String,
+    pub description: Option<String>,
+    pub repo: Option<String>,
+    pub directory: Option<String>,
+    pub exclude_file: Option<String>,
+    pub files_from: Option<String>,
+}
+
 fn first_arg(node: &KdlNode) -> Option<&str> {
     node.entries()
         .iter()
@@ -34,6 +43,25 @@ fn str_node(name: &str, value: &str) -> KdlNode {
     let mut n = KdlNode::new(name);
     n.push(str_entry(value));
     n
+}
+
+fn update_str_child(doc: &mut KdlDocument, name: &str, value: &str) {
+    if let Some(node) = doc.nodes_mut().iter_mut().find(|n| n.name().value() == name) {
+        if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+            *entry = str_entry(value);
+        }
+    } else {
+        doc.nodes_mut().push(str_node(name, value));
+    }
+}
+
+fn upsert_or_remove_child(doc: &mut KdlDocument, name: &str, value: Option<&str>) {
+    doc.nodes_mut().retain(|n| n.name().value() != name);
+    if let Some(v) = value {
+        if !v.is_empty() {
+            doc.nodes_mut().push(str_node(name, v));
+        }
+    }
 }
 
 pub fn add_task(kdl: &str, spec: TaskSpec) -> Result<String, String> {
@@ -106,6 +134,122 @@ pub fn remove_task(kdl: &str, name: &str) -> Result<String, String> {
 
     if children.nodes().len() == before {
         return Err(format!("task '{name}' not found"));
+    }
+
+    Ok(doc.to_string())
+}
+
+pub fn edit_task(kdl: &str, old_name: &str, spec: EditTaskSpec) -> Result<String, String> {
+    if spec.name.is_empty() {
+        return Err("task name cannot be empty".to_string());
+    }
+
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    // Check for duplicate name before any mutable borrow
+    if spec.name != old_name {
+        let duplicate = doc
+            .get("tasks")
+            .and_then(|t| t.children())
+            .map(|c| {
+                c.nodes()
+                    .iter()
+                    .any(|n| n.name().value() == "task" && first_arg(n) == Some(spec.name.as_str()))
+            })
+            .unwrap_or(false);
+        if duplicate {
+            return Err(format!("task '{}' already exists", spec.name));
+        }
+    }
+
+    // Read default-task before mutable borrow
+    let default_task_is_old = doc
+        .get("default-task")
+        .and_then(|n| first_arg(n))
+        .map(|s| s == old_name)
+        .unwrap_or(false);
+
+    // Update the task node
+    {
+        let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+        let task = tasks
+            .ensure_children()
+            .nodes_mut()
+            .iter_mut()
+            .find(|n| n.name().value() == "task" && first_arg(n) == Some(old_name))
+            .ok_or_else(|| format!("task '{old_name}' not found"))?;
+
+        // Update name argument
+        if spec.name != old_name {
+            if let Some(entry) = task.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+                *entry = str_entry(&spec.name);
+            }
+        }
+
+        let task_children = task.ensure_children();
+
+        // Update description
+        task_children.nodes_mut().retain(|n| n.name().value() != "description");
+        if let Some(desc) = &spec.description {
+            if !desc.is_empty() {
+                let pos = task_children
+                    .nodes()
+                    .iter()
+                    .position(|n| n.name().value() == "backup")
+                    .unwrap_or(0);
+                task_children.nodes_mut().insert(pos, str_node("description", desc));
+            }
+        }
+
+        // Update backup block fields only if repo is provided
+        if let Some(repo) = &spec.repo {
+            if let Some(backup) = task_children
+                .nodes_mut()
+                .iter_mut()
+                .find(|n| n.name().value() == "backup")
+            {
+                let bc = backup.ensure_children();
+                update_str_child(bc, "repo", repo);
+                upsert_or_remove_child(bc, "directory", spec.directory.as_deref());
+                upsert_or_remove_child(bc, "exclude-file", spec.exclude_file.as_deref());
+                upsert_or_remove_child(bc, "files-from", spec.files_from.as_deref());
+            }
+        }
+    }
+
+    // Update default-task if renaming
+    if spec.name != old_name && default_task_is_old {
+        if let Some(node) = doc.get_mut("default-task") {
+            if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+                *entry = str_entry(&spec.name);
+            }
+        }
+    }
+
+    // Update calls references if renaming
+    if spec.name != old_name {
+        if let Some(tasks) = doc.get_mut("tasks") {
+            if let Some(children) = tasks.children_mut() {
+                for task_node in children.nodes_mut() {
+                    if task_node.name().value() != "task" {
+                        continue;
+                    }
+                    if let Some(task_children) = task_node.children_mut() {
+                        for child in task_children.nodes_mut() {
+                            if child.name().value() == "calls" {
+                                if let Some(entry) =
+                                    child.entries_mut().iter_mut().find(|e| e.name().is_none())
+                                {
+                                    if entry.value().as_string() == Some(old_name) {
+                                        *entry = str_entry(&spec.name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(doc.to_string())
@@ -369,6 +513,153 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("backup block"));
+    }
+
+    const WITH_CALLS_KDL: &str = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            directory "/tmp"
+        }
+    }
+    task "secondary" {
+        calls "backup"
+    }
+}
+"#;
+
+    #[test]
+    fn edit_task_updates_fields() {
+        let result = edit_task(
+            BASE_KDL,
+            "backup",
+            EditTaskSpec {
+                name: "backup".to_string(),
+                description: Some("my backup".to_string()),
+                repo: Some("/new/repo".to_string()),
+                directory: Some("/new/dir".to_string()),
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"description "my backup""#));
+        assert!(result.contains(r#"repo "/new/repo""#));
+        assert!(result.contains(r#"directory "/new/dir""#));
+    }
+
+    #[test]
+    fn edit_task_renames_and_updates_references() {
+        let result = edit_task(
+            WITH_CALLS_KDL,
+            "backup",
+            EditTaskSpec {
+                name: "main".to_string(),
+                description: None,
+                repo: Some("/tmp/repo".to_string()),
+                directory: Some("/tmp".to_string()),
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"default-task "main""#));
+        assert!(result.contains(r#"task "main""#));
+        assert!(!result.contains(r#"task "backup""#));
+        assert!(result.contains(r#"calls "main""#));
+        assert!(!result.contains(r#"calls "backup""#));
+    }
+
+    #[test]
+    fn edit_task_removes_optional_field_when_none() {
+        let with_dir = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            directory "/tmp"
+        }
+    }
+}
+"#;
+        let result = edit_task(
+            with_dir,
+            "backup",
+            EditTaskSpec {
+                name: "backup".to_string(),
+                description: None,
+                repo: Some("/tmp/repo".to_string()),
+                directory: None,
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        assert!(!result.contains("directory"));
+        assert!(result.contains(r#"repo "/tmp/repo""#));
+    }
+
+    #[test]
+    fn edit_task_errors_on_duplicate_name() {
+        let err = edit_task(
+            TWO_TASKS_KDL,
+            "photos",
+            EditTaskSpec {
+                name: "backup".to_string(),
+                description: None,
+                repo: Some("/tmp/r2".to_string()),
+                directory: None,
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn edit_task_errors_on_empty_name() {
+        let err = edit_task(
+            BASE_KDL,
+            "backup",
+            EditTaskSpec {
+                name: String::new(),
+                description: None,
+                repo: Some("/tmp/repo".to_string()),
+                directory: None,
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn edit_task_skips_backup_fields_when_repo_is_none() {
+        let cmd_only = r#"default-task "cmd"
+tasks {
+    task "cmd" {
+        command "echo hi"
+    }
+}
+"#;
+        let result = edit_task(
+            cmd_only,
+            "cmd",
+            EditTaskSpec {
+                name: "cmd".to_string(),
+                description: Some("a command task".to_string()),
+                repo: None,
+                directory: None,
+                exclude_file: None,
+                files_from: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"description "a command task""#));
+        assert!(!result.contains("backup"));
     }
 
     const WITH_REMOTE_KDL: &str = r#"default-task "backup"
