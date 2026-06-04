@@ -134,6 +134,9 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
 }
 
 fn handle_delete(app: &mut App) {
+    if app.focused_pane == Pane::Remotes && app.current_remotes().is_empty() {
+        return;
+    }
     suspend_tui();
     let result = match app.focused_pane {
         Pane::Tasks => delete_task_prompt(app),
@@ -205,6 +208,9 @@ fn handle_open_editor(app: &mut App) {
 }
 
 fn handle_edit(app: &mut App) {
+    if app.focused_pane == Pane::Remotes && app.current_remotes().is_empty() {
+        return;
+    }
     suspend_tui();
     let result = match app.focused_pane {
         Pane::Tasks => edit_task_prompt(app),
