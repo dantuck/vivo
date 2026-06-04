@@ -313,6 +313,48 @@ pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String
     Ok(doc.to_string())
 }
 
+pub fn edit_remote(
+    kdl: &str,
+    task_name: &str,
+    old_url: &str,
+    spec: RemoteSpec,
+) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+
+    let backup = task
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "backup")
+        .ok_or_else(|| format!("task '{task_name}' has no backup block"))?;
+
+    let remote = backup
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "remote" && first_arg(n) == Some(old_url))
+        .ok_or_else(|| format!("remote '{old_url}' not found on task '{task_name}'"))?;
+
+    // Update URL argument
+    if let Some(entry) = remote.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+        *entry = str_entry(&spec.url);
+    }
+
+    // Update credentials child
+    let remote_children = remote.ensure_children();
+    update_str_child(remote_children, "credentials", &spec.credentials);
+
+    Ok(doc.to_string())
+}
+
 pub fn remove_remote(kdl: &str, task_name: &str, url: &str) -> Result<String, String> {
     let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
 
@@ -759,5 +801,53 @@ tasks {
             dir_pos < remote_pos,
             "directory should precede remote in output"
         );
+    }
+
+    #[test]
+    fn edit_remote_updates_url_and_credentials() {
+        let result = edit_remote(
+            WITH_REMOTE_KDL,
+            "backup",
+            "s3:http://example.com/b",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "local".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"remote "rustfs:http://nas:9000/bucket""#));
+        assert!(result.contains(r#"credentials "local""#));
+        assert!(!result.contains(r#"remote "s3:http://example.com/b""#));
+        assert!(!result.contains(r#"credentials "aws""#));
+    }
+
+    #[test]
+    fn edit_remote_errors_when_url_not_found() {
+        let err = edit_remote(
+            WITH_REMOTE_KDL,
+            "backup",
+            "s3:http://other.com/b",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "local".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn edit_remote_errors_when_task_not_found() {
+        let err = edit_remote(
+            WITH_REMOTE_KDL,
+            "ghost",
+            "s3:http://example.com/b",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "local".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("not found"));
     }
 }
