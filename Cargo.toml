@@ -17,6 +17,8 @@ description = "restic backup orchestrator with multi-remote sync and SOPS-encryp
 [dependencies]
 knuffel = "3.2.0"
 clap = { version = "4.3.13", features = ["cargo"] }
+inquire = "0.7"
+is-terminal = "0.4"
 colored = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yml = "0.0.12"

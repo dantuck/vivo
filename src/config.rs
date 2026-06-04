@@ -70,6 +70,32 @@ pub fn build_cli() -> Command {
         )
         .subcommand(Command::new("doctor").about("Check system health: tools, config, secrets, and remote connectivity"))
         .subcommand(Command::new("update").about("Update vivo to the latest release"))
+        .subcommand(
+            Command::new("task")
+                .about("Manage backup tasks")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("add")
+                        .about("Add a new backup task")
+                        .arg(Arg::new("name").long("name").short('n').value_name("NAME").help("Task name"))
+                        .arg(Arg::new("repo").long("repo").short('r').value_name("PATH").help("Restic repo path"))
+                        .arg(Arg::new("dir").long("dir").short('d').value_name("PATH").help("Directory to back up"))
+                        .arg(Arg::new("exclude-file").long("exclude-file").value_name("PATH").help("Exclude file path")),
+                )
+                .subcommand(Command::new("list").about("List backup tasks"))
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a backup task")
+                        .arg(
+                            Arg::new("name")
+                                .index(1)
+                                .required(true)
+                                .value_name("NAME")
+                                .help("Task name to remove"),
+                        ),
+                ),
+        )
 }
 
 pub fn xdg_config_home() -> PathBuf {

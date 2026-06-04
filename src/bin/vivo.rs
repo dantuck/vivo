@@ -1,3 +1,4 @@
+use is_terminal::IsTerminal;
 use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
@@ -206,6 +207,143 @@ fn cmd_update(dry_run: bool) {
     }
 }
 
+fn require_or_prompt(
+    matches: &clap::ArgMatches,
+    flag: &str,
+    prompt: &str,
+    interactive: bool,
+) -> String {
+    if let Some(v) = matches.get_one::<String>(flag) {
+        return v.clone();
+    }
+    if !interactive {
+        eprintln!("error: --{flag} is required in non-interactive mode");
+        process::exit(1);
+    }
+    inquire::Text::new(prompt)
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0))
+}
+
+fn get_or_prompt_opt(
+    matches: &clap::ArgMatches,
+    flag: &str,
+    prompt: &str,
+    interactive: bool,
+) -> Option<String> {
+    if let Some(v) = matches.get_one::<String>(flag) {
+        return Some(v.clone());
+    }
+    if !interactive {
+        return None;
+    }
+    let val = inquire::Text::new(prompt)
+        .with_help_message("Leave blank to skip")
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0));
+    if val.is_empty() { None } else { Some(val) }
+}
+
+fn cmd_task_add(config_path: &str, matches: &clap::ArgMatches) {
+    let interactive = std::io::stdin().is_terminal();
+    let name = require_or_prompt(matches, "name", "Task name:", interactive);
+    let repo = require_or_prompt(
+        matches,
+        "repo",
+        "Restic repo path (e.g. $HOME/.local/share/restic/main):",
+        interactive,
+    );
+    let directory = get_or_prompt_opt(matches, "dir", "Directory to back up:", interactive);
+    let exclude_file =
+        get_or_prompt_opt(matches, "exclude-file", "Exclude file path:", interactive);
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: could not read config '{config_path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo, directory, exclude_file }) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: could not write config: {e}");
+                process::exit(1);
+            }
+            println!("Added task '{name}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_task_list(config_path: &str) {
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: could not read config '{config_path}': {e}");
+            process::exit(1);
+        }
+    };
+    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    for task in &config.tasks {
+        if let Some(desc) = task.description() {
+            println!("{} — {}", task.name, desc);
+        } else {
+            println!("{}", task.name);
+        }
+    }
+}
+
+fn cmd_task_remove(config_path: &str, matches: &clap::ArgMatches) {
+    let name = matches
+        .get_one::<String>("name")
+        .expect("name is required")
+        .clone();
+
+    if std::io::stdin().is_terminal() {
+        let confirmed = inquire::Confirm::new(&format!("Remove task '{name}'?"))
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+    }
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    match vivo::remove_task(&kdl, &name) {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            println!("Removed task '{name}'.");
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -241,6 +379,15 @@ fn main() {
                 Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
                 Some(("show", _)) => cmd_secrets_show(&secrets_path),
                 Some(("import-b2", _)) => cmd_secrets_import_b2(&secrets_path),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("task", sub)) => {
+            match sub.subcommand() {
+                Some(("add", args)) => cmd_task_add(&config_path, args),
+                Some(("list", _)) => cmd_task_list(&config_path),
+                Some(("remove", args)) => cmd_task_remove(&config_path, args),
                 _ => unreachable!(),
             }
             return;
