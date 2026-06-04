@@ -4,6 +4,19 @@ use std::{env, process};
 use super::app::{App, Pane};
 use crate::config_editor::{EditTaskSpec, RemoteSpec, TaskSpec};
 
+macro_rules! ask {
+    ($expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(
+                inquire::InquireError::OperationCanceled
+                | inquire::InquireError::OperationInterrupted,
+            ) => return Ok("Cancelled.".to_string()),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+}
+
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -84,16 +97,11 @@ fn handle_add(app: &mut App) {
 }
 
 fn add_task_prompt(app: &App) -> Result<String, String> {
-    let name = inquire::Text::new("Task name:")
-        .prompt()
-        .map_err(|e| e.to_string())?;
-    let repo = inquire::Text::new("Restic repo path:")
-        .prompt()
-        .map_err(|e| e.to_string())?;
-    let dir_raw = inquire::Text::new("Directory to back up (blank to skip):")
+    let name = ask!(inquire::Text::new("Task name:").prompt());
+    let repo = ask!(inquire::Text::new("Restic repo path:").prompt());
+    let dir_raw = ask!(inquire::Text::new("Directory to back up (blank to skip):")
         .with_help_message("Leave blank to skip")
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
     let directory = if dir_raw.is_empty() { None } else { Some(dir_raw) };
 
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
@@ -112,12 +120,8 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
         .map(|t| t.name.clone())
         .ok_or("no task selected")?;
 
-    let url = inquire::Text::new("Remote URL (e.g. rustfs:http://nas:9000/bucket):")
-        .prompt()
-        .map_err(|e| e.to_string())?;
-    let credentials = inquire::Text::new("Credentials profile name:")
-        .prompt()
-        .map_err(|e| e.to_string())?;
+    let url = ask!(inquire::Text::new("Remote URL (e.g. rustfs:http://nas:9000/bucket):").prompt());
+    let credentials = ask!(inquire::Text::new("Credentials profile name:").prompt());
 
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::add_remote(
@@ -152,10 +156,9 @@ fn delete_task_prompt(app: &App) -> Result<String, String> {
         .map(|t| t.name.clone())
         .ok_or("no task selected")?;
 
-    let ok = inquire::Confirm::new(&format!("Remove task '{name}'?"))
+    let ok = ask!(inquire::Confirm::new(&format!("Remove task '{name}'?"))
         .with_default(false)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
     if !ok {
         return Ok("Cancelled.".to_string());
     }
@@ -178,12 +181,11 @@ fn delete_remote_prompt(app: &App) -> Result<String, String> {
         .map(|r| r.url.clone())
         .ok_or("no remote selected")?;
 
-    let ok = inquire::Confirm::new(&format!(
+    let ok = ask!(inquire::Confirm::new(&format!(
         "Remove remote '{url}' from task '{task_name}'?"
     ))
     .with_default(false)
-    .prompt()
-    .map_err(|e| e.to_string())?;
+    .prompt());
     if !ok {
         return Ok("Cancelled.".to_string());
     }
@@ -222,44 +224,38 @@ fn edit_task_prompt(app: &App) -> Result<String, String> {
     let task = app.tasks.get(app.selected_task).ok_or("no task selected")?;
     let old_name = task.name.clone();
 
-    let name = inquire::Text::new("Task name:")
+    let name = ask!(inquire::Text::new("Task name:")
         .with_initial_value(&task.name)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
 
     if name.is_empty() {
         return Err("task name cannot be empty".to_string());
     }
 
     let desc_default = task.description.clone().unwrap_or_default();
-    let desc_raw = inquire::Text::new("Description (blank = none):")
+    let desc_raw = ask!(inquire::Text::new("Description (blank = none):")
         .with_initial_value(&desc_default)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
     let description = if desc_raw.is_empty() { None } else { Some(desc_raw) };
 
     let (repo, directory, exclude_file, files_from) = if task.repo.is_some() {
-        let repo = inquire::Text::new("Repo path:")
+        let repo = ask!(inquire::Text::new("Repo path:")
             .with_initial_value(task.repo.as_deref().unwrap_or(""))
-            .prompt()
-            .map_err(|e| e.to_string())?;
+            .prompt());
 
-        let dir_raw = inquire::Text::new("Directory (blank = none):")
+        let dir_raw = ask!(inquire::Text::new("Directory (blank = none):")
             .with_initial_value(task.directory.as_deref().unwrap_or(""))
-            .prompt()
-            .map_err(|e| e.to_string())?;
+            .prompt());
         let directory = if dir_raw.is_empty() { None } else { Some(dir_raw) };
 
-        let excl_raw = inquire::Text::new("Exclude file (blank = none):")
+        let excl_raw = ask!(inquire::Text::new("Exclude file (blank = none):")
             .with_initial_value(task.exclude_file.as_deref().unwrap_or(""))
-            .prompt()
-            .map_err(|e| e.to_string())?;
+            .prompt());
         let exclude_file = if excl_raw.is_empty() { None } else { Some(excl_raw) };
 
-        let ff_raw = inquire::Text::new("Files from (blank = none):")
+        let ff_raw = ask!(inquire::Text::new("Files from (blank = none):")
             .with_initial_value(task.files_from.as_deref().unwrap_or(""))
-            .prompt()
-            .map_err(|e| e.to_string())?;
+            .prompt());
         let files_from = if ff_raw.is_empty() { None } else { Some(ff_raw) };
 
         (Some(repo), directory, exclude_file, files_from)
@@ -289,18 +285,16 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
         .ok_or("no remote selected")?;
     let old_url = remote.url.clone();
 
-    let url = inquire::Text::new("Remote URL:")
+    let url = ask!(inquire::Text::new("Remote URL:")
         .with_initial_value(&remote.url)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
     if url.trim().is_empty() {
         return Err("remote URL cannot be empty".to_string());
     }
 
-    let credentials = inquire::Text::new("Credentials profile:")
+    let credentials = ask!(inquire::Text::new("Credentials profile:")
         .with_initial_value(&remote.credentials)
-        .prompt()
-        .map_err(|e| e.to_string())?;
+        .prompt());
     if credentials.trim().is_empty() {
         return Err("credentials profile cannot be empty".to_string());
     }
