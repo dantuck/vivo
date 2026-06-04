@@ -77,14 +77,18 @@ impl App {
             if let Ok(config) =
                 knuffel::parse::<BackupConfig>(&self.config_path, &content)
             {
-                let new = App::new(&config, self.config_path.clone());
                 let prev_task = self.selected_task;
                 let prev_remote = self.selected_remote;
+                let prev_pane = self.focused_pane;
+                let prev_msg = self.status_message.take();
+                let new = App::new(&config, self.config_path.clone());
                 *self = new;
                 self.selected_task =
                     prev_task.min(self.tasks.len().saturating_sub(1));
                 self.selected_remote =
                     prev_remote.min(self.current_remotes().len().saturating_sub(1));
+                self.focused_pane = prev_pane;
+                self.status_message = prev_msg;
             }
         }
     }

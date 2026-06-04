@@ -319,6 +319,9 @@ pub fn edit_remote(
     old_url: &str,
     spec: RemoteSpec,
 ) -> Result<String, String> {
+    if spec.url.is_empty() {
+        return Err("remote URL cannot be empty".to_string());
+    }
     let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
 
     let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
@@ -849,6 +852,18 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn edit_remote_errors_on_empty_url() {
+        let err = edit_remote(
+            WITH_REMOTE_KDL,
+            "backup",
+            "s3:http://example.com/b",
+            RemoteSpec { url: String::new(), credentials: "aws".to_string() },
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be empty"));
     }
 
     #[test]

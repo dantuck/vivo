@@ -293,11 +293,17 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
         .with_initial_value(&remote.url)
         .prompt()
         .map_err(|e| e.to_string())?;
+    if url.trim().is_empty() {
+        return Err("remote URL cannot be empty".to_string());
+    }
 
     let credentials = inquire::Text::new("Credentials profile:")
         .with_initial_value(&remote.credentials)
         .prompt()
         .map_err(|e| e.to_string())?;
+    if credentials.trim().is_empty() {
+        return Err("credentials profile cannot be empty".to_string());
+    }
 
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::edit_remote(
