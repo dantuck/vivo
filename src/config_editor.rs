@@ -70,6 +70,47 @@ pub fn add_task(kdl: &str, spec: TaskSpec) -> Result<String, String> {
     Ok(doc.to_string())
 }
 
+pub fn remove_task(kdl: &str, name: &str) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    // Read default-task BEFORE any mutable borrow of tasks
+    let default_task = doc
+        .get("default-task")
+        .and_then(|n| first_arg(n))
+        .map(str::to_owned)
+        .unwrap_or_default();
+
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let children = tasks.ensure_children();
+
+    let task_count = children
+        .nodes()
+        .iter()
+        .filter(|n| n.name().value() == "task")
+        .count();
+
+    if task_count <= 1 {
+        return Err("cannot remove the only task — add another task first".to_string());
+    }
+
+    if default_task == name {
+        return Err(format!(
+            "cannot remove '{name}': it is the default-task — update default-task first"
+        ));
+    }
+
+    let before = children.nodes().len();
+    children
+        .nodes_mut()
+        .retain(|n| !(n.name().value() == "task" && first_arg(n) == Some(name)));
+
+    if children.nodes().len() == before {
+        return Err(format!("task '{name}' not found"));
+    }
+
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +172,54 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("already exists"));
+    }
+
+    const TWO_TASKS_KDL: &str = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/r1"
+            directory "/tmp"
+        }
+    }
+    task "photos" {
+        backup {
+            repo "/tmp/r2"
+            directory "/tmp"
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn remove_task_removes_non_default_task() {
+        let result = remove_task(TWO_TASKS_KDL, "photos").unwrap();
+        assert!(!result.contains(r#"task "photos""#));
+        assert!(result.contains(r#"task "backup""#));
+    }
+
+    #[test]
+    fn remove_task_rejects_default_task() {
+        let err = remove_task(TWO_TASKS_KDL, "backup").unwrap_err();
+        assert!(err.contains("default"));
+    }
+
+    #[test]
+    fn remove_task_rejects_only_task() {
+        let single_non_default = r#"default-task "main"
+tasks {
+    task "photos" {
+        backup { repo "/tmp/r" }
+    }
+}
+"#;
+        let err = remove_task(single_non_default, "photos").unwrap_err();
+        assert!(err.contains("only task"));
+    }
+
+    #[test]
+    fn remove_task_errors_when_not_found() {
+        let err = remove_task(TWO_TASKS_KDL, "nonexistent").unwrap_err();
+        assert!(err.contains("not found"));
     }
 }
