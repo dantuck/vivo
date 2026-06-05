@@ -199,6 +199,12 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     let mount_point_str = mount_point.to_string_lossy().to_string();
 
     println!("Mounting {restic_url} at {mount_point_str}");
+    println!();
+    println!("  Browse your backups:");
+    println!("    {mount_point_str}/snapshots/latest/  (most recent)");
+    println!("    {mount_point_str}/snapshots/         (all snapshots)");
+    println!("    {mount_point_str}/hosts/             (by hostname)");
+    println!();
     println!("Press Ctrl+C to unmount.");
 
     // Suppress default Ctrl+C exit so we can clean up the temp dir after restic exits.
