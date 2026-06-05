@@ -5,6 +5,13 @@ use super::app::{App, Pane, FIELD_NAMES};
 use super::credentials;
 use crate::config_editor::{EditTaskSpec, RemoteSpec, TaskSpec};
 
+fn ensure_path(path: &str) {
+    let expanded = crate::backup_config::backup::expand_env_vars(path);
+    if !expanded.is_empty() {
+        let _ = std::fs::create_dir_all(&expanded);
+    }
+}
+
 macro_rules! ask {
     ($expr:expr) => {
         match $expr {
@@ -147,9 +154,13 @@ fn add_task_prompt(app: &App) -> Result<String, String> {
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::add_task(
         &kdl,
-        TaskSpec { name: name.clone(), repo, directory, exclude_file: None },
+        TaskSpec { name: name.clone(), repo: repo.clone(), directory: directory.clone(), exclude_file: None },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
+    ensure_path(&repo);
+    if let Some(dir) = &directory {
+        ensure_path(dir);
+    }
     Ok(format!("Added task '{name}'."))
 }
 
@@ -497,6 +508,8 @@ fn edit_field_prompt(app: &App) -> Result<String, String> {
         _ => return Ok(String::new()),
     }
 
+    let repo_path = repo.clone();
+    let dir_path = directory.clone();
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::edit_task(
         &kdl,
@@ -504,6 +517,8 @@ fn edit_field_prompt(app: &App) -> Result<String, String> {
         EditTaskSpec { name: name.clone(), description, repo, directory, exclude_file, files_from },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
+    if let Some(r) = repo_path { ensure_path(&r); }
+    if let Some(d) = dir_path { ensure_path(&d); }
     Ok(format!("Updated '{name}'."))
 }
 
@@ -550,6 +565,8 @@ fn edit_task_prompt(app: &App) -> Result<String, String> {
         (None, None, None, None)
     };
 
+    let repo_path = repo.clone();
+    let dir_path = directory.clone();
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::edit_task(
         &kdl,
@@ -557,6 +574,8 @@ fn edit_task_prompt(app: &App) -> Result<String, String> {
         EditTaskSpec { name: name.clone(), description, repo, directory, exclude_file, files_from },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
+    if let Some(r) = repo_path { ensure_path(&r); }
+    if let Some(d) = dir_path { ensure_path(&d); }
     Ok(format!("Updated task '{name}'."))
 }
 
