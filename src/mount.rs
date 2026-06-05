@@ -206,6 +206,7 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     println!("    {mount_point_str}/hosts/             (by hostname)");
     println!();
     println!("Press Ctrl+C to unmount.");
+    println!("  (close any open files in the mount first to avoid 'device busy' errors)");
 
     // Suppress default Ctrl+C exit so we can clean up the temp dir after restic exits.
     // restic also receives the signal and handles FUSE unmounting itself.
@@ -220,12 +221,38 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
 
     let _ = child.wait();
 
+    // restic may have failed to unmount if files were open (EBUSY). Attempt a lazy
+    // unmount so the kernel detaches the FUSE mount even with open file handles.
+    lazy_unmount(&mount_point_str);
+
     if owned {
         let _ = fs::remove_dir(&mount_point);
     }
 
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+fn lazy_unmount(mount_point: &str) {
+    // -u unmount, -z lazy (detach now, clean up when last handle closes)
+    let _ = Command::new("fusermount")
+        .args(["-u", "-z", mount_point])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(target_os = "macos")]
+fn lazy_unmount(mount_point: &str) {
+    let _ = Command::new("umount")
+        .arg(mount_point)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn lazy_unmount(_mount_point: &str) {}
 
 #[cfg(test)]
 mod tests {
