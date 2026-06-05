@@ -107,6 +107,7 @@ fn create_profile_interactive(url: &str, secrets_path: &str) -> Result<Option<St
     if profile_name.trim().is_empty() {
         return Err("profile name cannot be empty".to_string());
     }
+    let profile_name = profile_name.trim().to_string();
 
     // Warn on duplicate
     let existing = list_profiles(secrets_path);
