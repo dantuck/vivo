@@ -1,18 +1,13 @@
-#[allow(unused_imports)]
 use std::collections::HashMap;
-#[allow(unused_imports)]
 use std::fs;
-#[allow(unused_imports)]
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
 use std::process::Command;
 
+use inquire::Select;
+
 use crate::backup_config::task::Task;
-#[allow(unused_imports)]
 use crate::backup_config::BackupConfig;
-#[allow(unused_imports)]
 use crate::config::Secrets;
-#[allow(unused_imports)]
 use crate::doctor;
 
 pub struct MountEntry {
@@ -164,8 +159,66 @@ pub fn run_preflight(
     !required_failed
 }
 
-pub fn run(_config_path: &str, _secrets_path: &str, _mount_path: Option<&str>) -> Result<(), String> {
-    todo!("implemented in Task 5")
+pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> Result<(), String> {
+    let content = fs::read_to_string(config_path)
+        .map_err(|e| format!("could not read config '{config_path}': {e}"))?;
+    let config: BackupConfig = knuffel::parse(config_path, &content)
+        .map_err(|e| format!("config parse error: {e}"))?;
+
+    let secrets_yaml = crate::backup_config::decrypt_sops_file(secrets_path)
+        .map_err(|e| format!("could not decrypt secrets: {e}"))?;
+    let secrets: Secrets = crate::backup_config::parse_secrets(&secrets_yaml)
+        .map_err(|e| format!("could not parse secrets: {e}"))?;
+
+    let entries = build_entries(&config.tasks);
+    if entries.is_empty() {
+        return Err("No backup tasks configured. Run `vivo task add` first.".to_string());
+    }
+
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    let selected_label = Select::new("Select repository to mount:", labels)
+        .prompt()
+        .map_err(|_| "cancelled".to_string())?;
+    let entry = entries
+        .iter()
+        .find(|e| e.label == selected_label)
+        .ok_or("selection not found")?;
+
+    let creds: HashMap<String, String> = match &entry.credentials_profile {
+        Some(profile) => secrets.credentials.get(profile).cloned().unwrap_or_default(),
+        None => HashMap::new(),
+    };
+
+    let restic_url = normalize_repo_url(&entry.repo_url);
+    let check_path = mount_path.map(Path::new);
+    if !run_preflight(&restic_url, &creds, &secrets.restic_password, check_path) {
+        return Err("pre-flight checks failed — fix the issues above and try again".to_string());
+    }
+
+    let (mount_point, owned) = mount_point_path(mount_path, &entry.task_name)?;
+    let mount_point_str = mount_point.to_string_lossy().to_string();
+
+    println!("Mounting {restic_url} at {mount_point_str}");
+    println!("Press Ctrl+C to unmount.");
+
+    // Suppress default Ctrl+C exit so we can clean up the temp dir after restic exits.
+    // restic also receives the signal and handles FUSE unmounting itself.
+    ctrlc::set_handler(|| {}).map_err(|e| format!("could not set Ctrl+C handler: {e}"))?;
+
+    let mut child = Command::new("restic")
+        .args(["mount", "--repo", &restic_url, &mount_point_str])
+        .envs(&creds)
+        .env("RESTIC_PASSWORD", &secrets.restic_password)
+        .spawn()
+        .map_err(|e| format!("could not start restic: {e}"))?;
+
+    let _ = child.wait();
+
+    if owned {
+        let _ = fs::remove_dir(&mount_point);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
