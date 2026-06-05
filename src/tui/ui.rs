@@ -42,7 +42,18 @@ fn focused_border(focused: bool) -> Style {
 }
 
 fn draw_tasks(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app.tasks.iter().map(|t| ListItem::new(t.name.as_str())).collect();
+    let items: Vec<ListItem> = app
+        .tasks
+        .iter()
+        .map(|t| {
+            let label = if t.name == app.default_task {
+                format!("{} *", t.name)
+            } else {
+                t.name.clone()
+            };
+            ListItem::new(label)
+        })
+        .collect();
     let list = List::new(items)
         .block(
             Block::default()
@@ -209,7 +220,7 @@ fn draw_calls_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let default_hint = match app.focused_pane {
         Pane::Tasks => {
-            "[a] add  [d] delete  [e] edit all  [o] open in $EDITOR  [Tab] switch pane  [q] quit"
+            "[a] add  [d] delete  [e] edit all  [s] set default  [o] open in $EDITOR  [Tab] switch pane  [q] quit"
         }
         Pane::Fields => {
             "[↑↓] select field  [Enter/e] edit field  [Tab] switch pane  [q] quit"
