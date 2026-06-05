@@ -31,9 +31,9 @@ self_update = { version = "0.40", default-features = false, features = ["archive
 kdl = "6.7.1"
 ratatui = { version = "0.30.0", features = ["crossterm"] }
 crossterm = "0.28"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 
 [profile.release]
 lto = "thin"

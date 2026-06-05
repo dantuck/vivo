@@ -334,15 +334,19 @@ pub fn write_profile_to_secrets(
     let recipient = age_public_key()
         .ok_or("no age key found — run: age-keygen -o ~/.config/sops/age/keys.txt")?;
 
-    let tmp_path = env::temp_dir().join("vivo-secrets-write-profile.yaml");
-    fs::write(&tmp_path, &updated_yaml)
+    let tmp_file = tempfile::Builder::new()
+        .prefix("vivo-secrets-")
+        .suffix(".yaml")
+        .tempfile()
+        .map_err(|e| format!("could not create temp file: {e}"))?;
+    fs::write(tmp_file.path(), &updated_yaml)
         .map_err(|e| format!("could not write temp file: {e}"))?;
 
     let result = SysCommand::new("sops")
         .args(["-e", "--age", &recipient, "--output", secrets_path])
-        .arg(&tmp_path)
+        .arg(tmp_file.path())
         .output();
-    let _ = fs::remove_file(&tmp_path);
+    // tmp_file dropped here, auto-deleted
 
     match result {
         Ok(o) if o.status.success() => Ok(()),
