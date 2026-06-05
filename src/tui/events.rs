@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{env, process};
 
 use super::app::{App, Pane, FIELD_NAMES};
@@ -26,13 +26,28 @@ macro_rules! ask {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Up => {
+                handle_move_call_up(app);
+                return;
+            }
+            KeyCode::Down => {
+                handle_move_call_down(app);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Tab => {
             app.focused_pane = match app.focused_pane {
                 Pane::Tasks => Pane::Fields,
                 Pane::Fields => Pane::Remotes,
-                Pane::Remotes => Pane::Tasks,
+                Pane::Remotes => Pane::Calls,
+                Pane::Calls => Pane::Tasks,
             };
             app.status_message = None;
         }
@@ -59,6 +74,7 @@ fn navigate_up(app: &mut App) {
                 app.selected_task -= 1;
                 app.selected_remote = 0;
                 app.selected_field = 0;
+                app.selected_call = 0;
             }
         }
         Pane::Fields => {
@@ -71,6 +87,11 @@ fn navigate_up(app: &mut App) {
                 app.selected_remote -= 1;
             }
         }
+        Pane::Calls => {
+            if app.selected_call > 0 {
+                app.selected_call -= 1;
+            }
+        }
     }
 }
 
@@ -81,6 +102,7 @@ fn navigate_down(app: &mut App) {
                 app.selected_task += 1;
                 app.selected_remote = 0;
                 app.selected_field = 0;
+                app.selected_call = 0;
             }
         }
         Pane::Fields => {
@@ -92,6 +114,12 @@ fn navigate_down(app: &mut App) {
             let max = app.current_remotes().len().saturating_sub(1);
             if app.selected_remote < max {
                 app.selected_remote += 1;
+            }
+        }
+        Pane::Calls => {
+            let max = app.current_calls().len().saturating_sub(1);
+            if app.selected_call < max {
+                app.selected_call += 1;
             }
         }
     }
@@ -138,6 +166,7 @@ fn handle_add(app: &mut App) {
         |a| match a.focused_pane {
             Pane::Tasks | Pane::Fields => add_task_prompt(a),
             Pane::Remotes => add_remote_prompt(a),
+            Pane::Calls => add_call_prompt(a),
         },
         true,
     );
@@ -279,8 +308,34 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
     Ok(msg)
 }
 
+fn add_call_prompt(app: &App) -> Result<String, String> {
+    let task = app.tasks.get(app.selected_task).ok_or("no task selected")?;
+    let task_name = task.name.clone();
+
+    let options: Vec<String> = app
+        .tasks
+        .iter()
+        .filter(|t| t.name != task_name && !task.calls.contains(&t.name))
+        .map(|t| t.name.clone())
+        .collect();
+
+    if options.is_empty() {
+        return Ok("No other tasks to add.".to_string());
+    }
+
+    let call_name = ask!(inquire::Select::new("Call which task?", options).prompt());
+
+    let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
+    let new_kdl = crate::config_editor::add_call(&kdl, &task_name, &call_name)?;
+    std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
+    Ok(format!("Added call to '{call_name}'."))
+}
+
 fn handle_delete(app: &mut App) {
     if app.focused_pane == Pane::Remotes && app.current_remotes().is_empty() {
+        return;
+    }
+    if app.focused_pane == Pane::Calls && app.current_calls().is_empty() {
         return;
     }
     run_prompt(
@@ -288,9 +343,62 @@ fn handle_delete(app: &mut App) {
         |a| match a.focused_pane {
             Pane::Tasks | Pane::Fields => delete_task_prompt(a),
             Pane::Remotes => delete_remote_prompt(a),
+            Pane::Calls => delete_call_prompt(a),
         },
         true,
     );
+}
+
+fn handle_move_call_up(app: &mut App) {
+    if app.focused_pane != Pane::Calls || app.selected_call == 0 {
+        return;
+    }
+    let idx = app.selected_call;
+    run_prompt(
+        app,
+        move |a| {
+            let task_name = a
+                .tasks
+                .get(a.selected_task)
+                .map(|t| t.name.clone())
+                .ok_or("no task selected")?;
+            let kdl = std::fs::read_to_string(&a.config_path).map_err(|e| e.to_string())?;
+            let new_kdl = crate::config_editor::move_call_up(&kdl, &task_name, idx)?;
+            std::fs::write(&a.config_path, new_kdl).map_err(|e| e.to_string())?;
+            Ok(String::new())
+        },
+        true,
+    );
+    if app.selected_call > 0 {
+        app.selected_call -= 1;
+    }
+}
+
+fn handle_move_call_down(app: &mut App) {
+    if app.focused_pane != Pane::Calls {
+        return;
+    }
+    let calls_len = app.current_calls().len();
+    if app.selected_call + 1 >= calls_len {
+        return;
+    }
+    let idx = app.selected_call;
+    run_prompt(
+        app,
+        move |a| {
+            let task_name = a
+                .tasks
+                .get(a.selected_task)
+                .map(|t| t.name.clone())
+                .ok_or("no task selected")?;
+            let kdl = std::fs::read_to_string(&a.config_path).map_err(|e| e.to_string())?;
+            let new_kdl = crate::config_editor::move_call_down(&kdl, &task_name, idx)?;
+            std::fs::write(&a.config_path, new_kdl).map_err(|e| e.to_string())?;
+            Ok(String::new())
+        },
+        true,
+    );
+    app.selected_call += 1;
 }
 
 fn delete_task_prompt(app: &App) -> Result<String, String> {
@@ -340,6 +448,24 @@ fn delete_remote_prompt(app: &App) -> Result<String, String> {
     Ok(format!("Removed remote '{url}'."))
 }
 
+fn delete_call_prompt(app: &App) -> Result<String, String> {
+    let task_name = app
+        .tasks
+        .get(app.selected_task)
+        .map(|t| t.name.clone())
+        .ok_or("no task selected")?;
+    let call_name = app
+        .current_calls()
+        .get(app.selected_call)
+        .cloned()
+        .ok_or("no call selected")?;
+
+    let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
+    let new_kdl = crate::config_editor::remove_call(&kdl, &task_name, app.selected_call)?;
+    std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
+    Ok(format!("Removed call to '{call_name}'."))
+}
+
 fn handle_open_editor(app: &mut App) {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     run_prompt(
@@ -362,6 +488,7 @@ fn handle_edit(app: &mut App) {
             }
             run_prompt(app, edit_remote_prompt, true);
         }
+        Pane::Calls => {}
     }
 }
 
