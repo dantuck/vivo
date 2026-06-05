@@ -87,6 +87,10 @@ impl Task {
         self.backup.as_ref().and_then(|b| b.files_from())
     }
 
+    pub fn call_names(&self) -> Vec<&str> {
+        self.calls.iter().map(|c| c.name.as_str()).collect()
+    }
+
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
