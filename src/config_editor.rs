@@ -389,6 +389,98 @@ pub fn remove_remote(kdl: &str, task_name: &str, url: &str) -> Result<String, St
     Ok(doc.to_string())
 }
 
+pub fn add_call(kdl: &str, task_name: &str, call_name: &str) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let children = task.ensure_children();
+    if children
+        .nodes()
+        .iter()
+        .any(|n| n.name().value() == "calls" && first_arg(n) == Some(call_name))
+    {
+        return Err(format!("task '{task_name}' already calls '{call_name}'"));
+    }
+    children.nodes_mut().push(str_node("calls", call_name));
+    Ok(doc.to_string())
+}
+
+pub fn remove_call(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let children = task.ensure_children();
+    let doc_idx = children
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.name().value() == "calls")
+        .nth(index)
+        .map(|(i, _)| i)
+        .ok_or_else(|| format!("call at index {index} not found"))?;
+    children.nodes_mut().remove(doc_idx);
+    Ok(doc.to_string())
+}
+
+pub fn move_call_up(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
+    if index == 0 {
+        return Ok(kdl.to_string());
+    }
+    swap_calls(kdl, task_name, index - 1, index)
+}
+
+pub fn move_call_down(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
+    let doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let call_count = doc
+        .get("tasks")
+        .and_then(|t| t.children())
+        .and_then(|c| {
+            c.nodes()
+                .iter()
+                .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        })
+        .and_then(|t| t.children())
+        .map(|c| c.nodes().iter().filter(|n| n.name().value() == "calls").count())
+        .unwrap_or(0);
+    if index + 1 >= call_count {
+        return Ok(kdl.to_string());
+    }
+    swap_calls(kdl, task_name, index, index + 1)
+}
+
+fn swap_calls(kdl: &str, task_name: &str, a: usize, b: usize) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
+    let task = tasks
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
+        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let children = task.ensure_children();
+    let positions: Vec<usize> = children
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.name().value() == "calls")
+        .map(|(i, _)| i)
+        .collect();
+    let pos_a = *positions.get(a).ok_or_else(|| format!("call at index {a} not found"))?;
+    let pos_b = *positions.get(b).ok_or_else(|| format!("call at index {b} not found"))?;
+    children.nodes_mut().swap(pos_a, pos_b);
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,5 +975,84 @@ tasks {
         )
         .unwrap_err();
         assert!(err.contains("backup block"));
+    }
+
+    const MULTI_CALLS_KDL: &str = r#"default-task "main"
+tasks {
+    task "main" {
+        calls "alpha"
+        calls "beta"
+        calls "gamma"
+    }
+    task "alpha" {
+        command "echo alpha"
+    }
+    task "beta" {
+        command "echo beta"
+    }
+    task "gamma" {
+        command "echo gamma"
+    }
+}
+"#;
+
+    #[test]
+    fn add_call_appends_call_node() {
+        let result = add_call(WITH_CALLS_KDL, "backup", "secondary").unwrap();
+        assert!(result.contains(r#"calls "secondary""#));
+    }
+
+    #[test]
+    fn add_call_rejects_duplicate() {
+        let err = add_call(WITH_CALLS_KDL, "secondary", "backup").unwrap_err();
+        assert!(err.contains("already"));
+    }
+
+    #[test]
+    fn add_call_errors_when_task_not_found() {
+        let err = add_call(WITH_CALLS_KDL, "ghost", "backup").unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn remove_call_removes_by_index() {
+        let result = remove_call(MULTI_CALLS_KDL, "main", 1).unwrap();
+        assert!(!result.contains(r#"calls "beta""#));
+        assert!(result.contains(r#"calls "alpha""#));
+        assert!(result.contains(r#"calls "gamma""#));
+    }
+
+    #[test]
+    fn remove_call_errors_on_out_of_range_index() {
+        let err = remove_call(MULTI_CALLS_KDL, "main", 99).unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn move_call_up_swaps_with_predecessor() {
+        let result = move_call_up(MULTI_CALLS_KDL, "main", 1).unwrap();
+        let beta_pos = result.find(r#"calls "beta""#).unwrap();
+        let alpha_pos = result.find(r#"calls "alpha""#).unwrap();
+        assert!(beta_pos < alpha_pos, "beta should precede alpha after moving index 1 up");
+    }
+
+    #[test]
+    fn move_call_up_noop_at_index_zero() {
+        let result = move_call_up(MULTI_CALLS_KDL, "main", 0).unwrap();
+        assert_eq!(result, MULTI_CALLS_KDL);
+    }
+
+    #[test]
+    fn move_call_down_swaps_with_successor() {
+        let result = move_call_down(MULTI_CALLS_KDL, "main", 1).unwrap();
+        let beta_pos = result.find(r#"calls "beta""#).unwrap();
+        let gamma_pos = result.find(r#"calls "gamma""#).unwrap();
+        assert!(beta_pos > gamma_pos, "gamma should precede beta after moving index 1 down");
+    }
+
+    #[test]
+    fn move_call_down_noop_at_last_index() {
+        let result = move_call_down(MULTI_CALLS_KDL, "main", 2).unwrap();
+        assert_eq!(result, MULTI_CALLS_KDL);
     }
 }
