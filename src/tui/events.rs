@@ -308,8 +308,14 @@ fn test_remote_prompt(app: &App) -> Result<String, String> {
             .status()
             .map_err(|e| format!("could not run b2: {e}"))?
     } else {
+        // Translate vivo-specific schemes to restic-native equivalents before invoking restic
+        let restic_url = if url.starts_with("rustfs:") {
+            url.replacen("rustfs:", "s3:", 1)
+        } else {
+            url.clone()
+        };
         process::Command::new("restic")
-            .args(["-r", &url, "snapshots", "--no-lock", "--no-cache"])
+            .args(["-r", &restic_url, "snapshots", "--no-lock", "--no-cache"])
             .status()
             .map_err(|e| format!("could not run restic: {e}"))?
     };
