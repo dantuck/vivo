@@ -41,6 +41,10 @@ fn run_loop<B: ratatui::backend::Backend>(
     app: &mut App,
 ) -> Result<(), String> {
     loop {
+        if app.needs_clear {
+            terminal.clear().map_err(|e| e.to_string())?;
+            app.needs_clear = false;
+        }
         terminal.draw(|f| ui::draw(f, app)).map_err(|e| e.to_string())?;
 
         if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {

@@ -29,6 +29,7 @@ pub struct App {
     pub config_path: String,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    pub needs_clear: bool,
 }
 
 impl App {
@@ -62,6 +63,7 @@ impl App {
             config_path,
             should_quit: false,
             status_message: None,
+            needs_clear: false,
         }
     }
 

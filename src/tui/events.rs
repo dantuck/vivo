@@ -94,6 +94,7 @@ fn handle_add(app: &mut App) {
         }
         Err(e) => app.status_message = Some(format!("error: {e}")),
     }
+    app.needs_clear = true;
 }
 
 fn add_task_prompt(app: &App) -> Result<String, String> {
@@ -150,6 +151,7 @@ fn handle_delete(app: &mut App) {
         }
         Err(e) => app.status_message = Some(format!("error: {e}")),
     }
+    app.needs_clear = true;
 }
 
 fn delete_task_prompt(app: &App) -> Result<String, String> {
@@ -205,6 +207,7 @@ fn handle_open_editor(app: &mut App) {
     let _ = process::Command::new(&editor).arg(&app.config_path).status();
     resume_tui();
     app.reload();
+    app.needs_clear = true;
 }
 
 fn handle_edit(app: &mut App) {
@@ -224,6 +227,7 @@ fn handle_edit(app: &mut App) {
         }
         Err(e) => app.status_message = Some(format!("error: {e}")),
     }
+    app.needs_clear = true;
 }
 
 fn edit_task_prompt(app: &App) -> Result<String, String> {
