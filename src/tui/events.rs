@@ -392,28 +392,48 @@ fn test_remote_prompt(app: &App) -> Result<String, String> {
     println!("\nTesting remote: {url}");
     println!("Credentials:    {profile}\n");
 
-    let status = if url.starts_with("b2:") {
+    let (status, restic_output) = if url.starts_with("b2:") {
         let path = url.trim_start_matches("b2:").trim_start_matches('/');
-        process::Command::new("b2")
+        let s = process::Command::new("b2")
             .args(["ls", path])
             .status()
-            .map_err(|e| format!("could not run b2: {e}"))?
+            .map_err(|e| format!("could not run b2: {e}"))?;
+        (s, String::new())
     } else {
-        // Translate vivo-specific schemes to restic-native equivalents before invoking restic
         let rurl = restic_url(&url);
-        process::Command::new("restic")
+        let out = process::Command::new("restic")
             .args(["-r", &rurl, "snapshots", "--no-lock", "--no-cache"])
-            .status()
-            .map_err(|e| format!("could not run restic: {e}"))?
+            .output()
+            .map_err(|e| format!("could not run restic: {e}"))?;
+        print!("{}", String::from_utf8_lossy(&out.stdout));
+        print!("{}", String::from_utf8_lossy(&out.stderr));
+        let combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status, combined)
     };
 
     println!();
-    let summary = if status.success() {
+    let mut summary = if status.success() {
         "Remote test passed.".to_string()
     } else {
         format!("Remote test failed (exit {}).", status.code().unwrap_or(-1))
     };
     println!("{summary}");
+
+    if !status.success() && repo_needs_init(&restic_output) {
+        let secrets_path = crate::config::secrets_path_from();
+        match offer_repo_init(&url, &profile, &secrets_path) {
+            Ok(msg) if !msg.is_empty() => {
+                summary = msg.clone();
+                println!("{msg}");
+            }
+            Err(e) => println!("Init failed: {e}"),
+            _ => {}
+        }
+    }
 
     println!("\nPress Enter to return...");
     std::io::stdin().read_line(&mut String::new()).ok();
@@ -570,10 +590,17 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
         &kdl,
         &task_name,
         &old_url,
-        RemoteSpec { url, credentials },
+        RemoteSpec { url: url.clone(), credentials: credentials.clone() },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
-    Ok("Updated remote.".to_string())
+
+    let init_msg = offer_repo_init(&url, &credentials, &secrets_path)?;
+    let msg = if init_msg.is_empty() {
+        "Updated remote.".to_string()
+    } else {
+        format!("Updated remote. {init_msg}")
+    };
+    Ok(msg)
 }
 
 #[cfg(test)]
