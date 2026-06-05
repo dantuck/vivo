@@ -32,6 +32,7 @@ kdl = "6.7.1"
 ratatui = { version = "0.30.0", features = ["crossterm"] }
 crossterm = "0.28"
 tempfile = "3"
+ctrlc = "3.4"
 
 [dev-dependencies]
 

@@ -152,7 +152,7 @@ pub fn check_restic_password(secrets: &Secrets) -> CheckResult {
     }
 }
 
-fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
+pub(crate) fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -225,6 +225,69 @@ pub fn check_remote_connectivity(
             status: CheckStatus::Warn,
             detail: Some("unsupported remote prefix — skipping connectivity check".to_string()),
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn check_fuse() -> CheckResult {
+    let found = ["fusermount", "fusermount3"].iter().any(|bin| {
+        process::Command::new(bin)
+            .arg("--version")
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    });
+    if found {
+        CheckResult {
+            label: "FUSE (fusermount)".to_string(),
+            status: CheckStatus::Ok,
+            detail: None,
+        }
+    } else {
+        CheckResult {
+            label: "FUSE".to_string(),
+            status: CheckStatus::Fail,
+            detail: Some(
+                "fusermount not found — install FUSE: sudo apt install fuse  OR  sudo dnf install fuse"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn check_fuse() -> CheckResult {
+    let has_mount = process::Command::new("mount_macfuse")
+        .arg("--version")
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let kext_exists = std::path::Path::new("/Library/Filesystems/macfuse.kext").exists();
+    if has_mount || kext_exists {
+        CheckResult {
+            label: "FUSE (macFUSE)".to_string(),
+            status: CheckStatus::Ok,
+            detail: None,
+        }
+    } else {
+        CheckResult {
+            label: "FUSE (macFUSE)".to_string(),
+            status: CheckStatus::Fail,
+            detail: Some("macFUSE not found — install: brew install --cask macfuse".to_string()),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn check_fuse() -> CheckResult {
+    CheckResult {
+        label: "FUSE".to_string(),
+        status: CheckStatus::Fail,
+        detail: Some("FUSE mount is not supported on this platform".to_string()),
     }
 }
 
@@ -363,5 +426,20 @@ tasks {{
         };
         let r = check_restic_password(&secrets);
         assert!(matches!(r.status, CheckStatus::Ok));
+    }
+
+    #[test]
+    fn check_fuse_fails_when_path_is_empty() {
+        let original = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", "");
+        let r = check_fuse();
+        std::env::set_var("PATH", &original);
+        assert!(matches!(r.status, CheckStatus::Fail));
+    }
+
+    #[test]
+    fn check_fuse_returns_a_result() {
+        // Should not panic regardless of platform
+        let _ = check_fuse();
     }
 }
