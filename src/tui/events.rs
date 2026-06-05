@@ -369,7 +369,8 @@ fn handle_move_call_up(app: &mut App) {
         },
         true,
     );
-    if app.selected_call > 0 {
+    let failed = app.status_message.as_deref().map(|s| s.starts_with("error:")).unwrap_or(false);
+    if !failed && app.selected_call > 0 {
         app.selected_call -= 1;
     }
 }
@@ -398,7 +399,10 @@ fn handle_move_call_down(app: &mut App) {
         },
         true,
     );
-    app.selected_call += 1;
+    let failed = app.status_message.as_deref().map(|s| s.starts_with("error:")).unwrap_or(false);
+    if !failed {
+        app.selected_call += 1;
+    }
 }
 
 fn delete_task_prompt(app: &App) -> Result<String, String> {
