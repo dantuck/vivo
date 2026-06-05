@@ -39,13 +39,15 @@ impl RemoteBackend for S3Backend {
         env: &HashMap<String, String>,
     ) -> Result<(), String> {
         if dry_run {
-            println!("[dry-run] would copy {local_repo} to {}", self.url);
+            println!("[dry-run] would copy from {local_repo} to {}", self.url);
             return Ok(());
         }
 
+        let restic_password = std::env::var("RESTIC_PASSWORD").unwrap_or_default();
         let output = Command::new("restic")
-            .args(["copy", "--repo", local_repo, "--to", &self.url])
+            .args(["-r", &self.url, "copy", "--from-repo", local_repo])
             .envs(env)
+            .env("RESTIC_FROM_PASSWORD", restic_password)
             .output()
             .map_err(|e| format!("failed to run restic: {e}"))?;
 
