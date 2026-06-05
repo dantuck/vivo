@@ -189,7 +189,7 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
         None => HashMap::new(),
     };
 
-    let restic_url = normalize_repo_url(&entry.repo_url);
+    let restic_url = normalize_repo_url(&crate::expand_env_vars(&entry.repo_url));
     let check_path = mount_path.map(Path::new);
     if !run_preflight(&restic_url, &creds, &secrets.restic_password, check_path) {
         return Err("pre-flight checks failed — fix the issues above and try again".to_string());
@@ -383,5 +383,22 @@ tasks {
         let ok = run_preflight("/tmp/norepo", &HashMap::new(), "pw", None);
         std::env::set_var("PATH", &original);
         assert!(!ok, "preflight should fail when restic is not on PATH");
+    }
+
+    #[test]
+    fn build_entries_expands_env_vars_in_local_repo() {
+        // Verify that $HOME-style repo paths in configs will be expanded before use.
+        // run() calls expand_env_vars on entry.repo_url; this test confirms the raw
+        // value comes through build_entries so expand_env_vars is what matters.
+        let kdl = make_task_kdl("backup", "$HOME/.local/share/restic/main", &[]);
+        let tasks = parse_tasks(&kdl);
+        let entries = build_entries(&tasks);
+        assert_eq!(entries.len(), 1);
+        // Raw URL stored as-is — expansion happens in run() before preflight/mount
+        assert_eq!(entries[0].repo_url, "$HOME/.local/share/restic/main");
+        // But after expand_env_vars it resolves to a real path
+        let expanded = crate::expand_env_vars(&entries[0].repo_url);
+        assert!(!expanded.contains('$'), "expanded path should not contain $ — got: {expanded}");
+        assert!(expanded.contains('/'), "expanded path should be absolute");
     }
 }
