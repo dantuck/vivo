@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.8.0](https://github.com/dantuck/vivo/compare/v0.7.0...v0.8.0) (2026-06-05)
+
+
+### Features
+
+* **backup_config:** add apply_profile_to_yaml and write_profile_to_secrets ([3df4754](https://github.com/dantuck/vivo/commit/3df47543afab7f59cbf96bc2086dfe21ab080b3b))
+* **backup:** auto-init local restic repo before first backup ([d91bd23](https://github.com/dantuck/vivo/commit/d91bd2398739e2cd836ad9574009c25cda924193))
+* **config:** add edit_remote ([7e91347](https://github.com/dantuck/vivo/commit/7e91347a4c4635ab06b7c1e4a8f6fa02958a8cfd))
+* **config:** add edit_task with rename and reference updates ([a8eb527](https://github.com/dantuck/vivo/commit/a8eb52726d911754cf1dd4eaf9c8affb82701e0e))
+* **doctor:** add check_fuse() and expose run_with_timeout; add ctrlc dep ([d3aaf20](https://github.com/dantuck/vivo/commit/d3aaf2036544040b5c49091bdd91400acc99735a))
+* **mount:** add check_repo_accessible and run_preflight ([317af75](https://github.com/dantuck/vivo/commit/317af7560696245fd9230f1fe20c87b278a54cab))
+* **mount:** add mount_point_path and check_mount_point_valid ([45a1537](https://github.com/dantuck/vivo/commit/45a15370d1cfe5d01cb0e922d56ef3b489e0ff67))
+* **mount:** add MountEntry, build_entries, normalize_repo_url ([d1b4a73](https://github.com/dantuck/vivo/commit/d1b4a73b1d5ae87207f246f0988a57f5ce8e4a82))
+* **mount:** implement run() with picker, preflight, restic mount, cleanup ([9b2ebd5](https://github.com/dantuck/vivo/commit/9b2ebd5b9885f955f6f2d8ef68124c28b1542d2f))
+* **mount:** wire up vivo mount subcommand to CLI ([373e353](https://github.com/dantuck/vivo/commit/373e3530c3ae0273e9d6b8a9588c6cf385d05866))
+* **tui:** add CredentialType enum and detect_url_type ([0a753af](https://github.com/dantuck/vivo/commit/0a753affc09553f154df17797d56af8b25640481))
+* **tui:** add edit task/remote prompts, bind e and o keys ([11349b6](https://github.com/dantuck/vivo/commit/11349b684d7bd90fe4d2a7f75e72dcca31e2447a))
+* **tui:** add fields pane with per-field selection and highlight ([b3c4b24](https://github.com/dantuck/vivo/commit/b3c4b244bd04925e4892f9061874eb2428def9dc))
+* **tui:** add parse_profile_names and list_profiles ([21bb8e0](https://github.com/dantuck/vivo/commit/21bb8e01f1943d01ab2bab57120dea3c9aa7886c))
+* **tui:** add select_or_create_profile interactive flow ([7e1cdf7](https://github.com/dantuck/vivo/commit/7e1cdf70dccbd28c62b3aaaf43a17d6c505e8a33))
+* **tui:** add suggest_profile_name ([56f55b4](https://github.com/dantuck/vivo/commit/56f55b4e1d438316c55995a5c43457d826006ebe))
+* **tui:** auto-create repo and directory paths when adding or editing tasks ([b515877](https://github.com/dantuck/vivo/commit/b5158772d1b6962a25e39250a174f2256850b499))
+* **tui:** expose backup fields via public accessors ([a38c84b](https://github.com/dantuck/vivo/commit/a38c84bd31ed50a2877810466d0b06ca21622586))
+* **tui:** extend TaskEntry with task detail fields ([29da393](https://github.com/dantuck/vivo/commit/29da3933b1d4c711e81be60b12786b70b67ae112))
+* **tui:** offer restic init on edit-remote and test-remote when repo missing ([1ba57f3](https://github.com/dantuck/vivo/commit/1ba57f304e10f0ca6f0e490858fe0d8f3eb7e234))
+* **tui:** offer restic init when adding a remote with no repo ([2d180c1](https://github.com/dantuck/vivo/commit/2d180c105e4f905043eb399074f0d221b3c91723))
+* **tui:** replace credentials text prompt with profile select ([f393dc7](https://github.com/dantuck/vivo/commit/f393dc77b57d634ac6a17f44b058dda8e44d2180))
+* **tui:** rewrite right pane as full task detail view ([d05a037](https://github.com/dantuck/vivo/commit/d05a037bde4eed9072b0cd0e915bcbc2aed862fd))
+
+
+### Bug Fixes
+
+* **backup_config:** use private 0600 temp file for secrets write ([7d9da6d](https://github.com/dantuck/vivo/commit/7d9da6da22b990149feb75dcee22aba73793200d))
+* **config:** align edit_remote error message, add missing backup block test ([c228cae](https://github.com/dantuck/vivo/commit/c228caee4aa9f89bcf4ae8b856011e051bb51fbe))
+* **config:** preserve node ordering in upsert_or_remove_child, repair malformed nodes ([8fb2610](https://github.com/dantuck/vivo/commit/8fb2610d9f250527783292b2a086f1adef3bf033))
+* **doctor:** consistent FUSE label in fail branch; gate PATH test to Linux ([66174bc](https://github.com/dantuck/vivo/commit/66174bccd1ff9c6adae850fd8c9aece1c8c03d4a))
+* **mount:** expand env vars in repo URL before preflight and mount ([85797eb](https://github.com/dantuck/vivo/commit/85797eb1bb1a5eb1b81c5f1c8dacb2dd675d190f))
+* **mount:** lazy unmount on exit; hint to close files before Ctrl+C ([9ce0397](https://github.com/dantuck/vivo/commit/9ce0397d7378c748b11e5628d68b9489fa8aa934))
+* **mount:** print unmount confirmation on exit ([b8411f8](https://github.com/dantuck/vivo/commit/b8411f85c1cba769a1b85e3e8e7376998105457a))
+* **mount:** show snapshot browse paths after mounting ([a2aa443](https://github.com/dantuck/vivo/commit/a2aa44374926eb33d7fb6c87f3958d5cf9a5a766))
+* **remote:** correct restic copy args and set source repo password for S3 sync ([0d73aa2](https://github.com/dantuck/vivo/commit/0d73aa2ba6c030f6aa317a34aea10dc601cbed3e))
+* **tui:** clamp selected_remote index in render to guard against stale state ([1a262b8](https://github.com/dantuck/vivo/commit/1a262b81213a108ab77c8b2f32950f026e152fdf))
+* **tui:** classify s3+https as S3, remove println from profile create ([679ed9e](https://github.com/dantuck/vivo/commit/679ed9e931257d263d56b044d15b2a2cebc39f3e))
+* **tui:** force full repaint after suspend/resume to fix stale screen on prompt return ([d8123e7](https://github.com/dantuck/vivo/commit/d8123e7c20aa271f6f1238ead26f8ec4da082361))
+* **tui:** ignore e/d in Remotes pane when task has no remotes ([98f9dc8](https://github.com/dantuck/vivo/commit/98f9dc8607481d1bd9dffd24da8bcfdee2c958d7))
+* **tui:** preserve status message and pane focus across reload; validate remote URL ([10015a8](https://github.com/dantuck/vivo/commit/10015a85f70a29758d2b1bb07b005453f705c169))
+* **tui:** remove s3+https from detect_url_type (backend unsupported) ([f85b28f](https://github.com/dantuck/vivo/commit/f85b28fcd2839170bdd7e69144480f9fc79d8167))
+* **tui:** translate rustfs: to s3: before passing URL to restic in test-remote ([7e52cd2](https://github.com/dantuck/vivo/commit/7e52cd2252f0b950978f5ebf441e0f884bd4ab24))
+* **tui:** treat prompt cancel (Esc/Ctrl-C) as silent no-op instead of error ([12a77f3](https://github.com/dantuck/vivo/commit/12a77f34694d4372f2a4c48038ce8ff7fdba64b8))
+* **tui:** trim profile name before duplicate check and save ([aa26e09](https://github.com/dantuck/vivo/commit/aa26e09c752941227180187d86e2f06b4918f6c9))
+
 ## [0.7.0](https://github.com/dantuck/vivo/compare/v0.6.0...v0.7.0) (2026-06-04)
 
 
