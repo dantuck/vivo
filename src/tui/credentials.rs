@@ -47,6 +47,24 @@ pub fn suggest_profile_name(url: &str) -> String {
     host.split('.').next().unwrap_or(host).to_string()
 }
 
+pub fn parse_profile_names(yaml: &str) -> Vec<String> {
+    match crate::backup_config::parse_secrets(yaml) {
+        Ok(secrets) => {
+            let mut names: Vec<String> = secrets.credentials.into_keys().collect();
+            names.sort();
+            names
+        }
+        Err(_) => vec![],
+    }
+}
+
+pub fn list_profiles(secrets_path: &str) -> Vec<String> {
+    match crate::backup_config::decrypt_sops_file(secrets_path) {
+        Ok(decrypted) => parse_profile_names(&decrypted),
+        Err(_) => vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +126,24 @@ mod tests {
     #[test]
     fn suggest_single_label_host() {
         assert_eq!(suggest_profile_name("rustfs:https://nas/bucket"), "nas");
+    }
+
+    #[test]
+    fn parse_profiles_returns_sorted_names() {
+        let yaml = "restic_password: secret\ncredentials:\n  nas:\n    FOO: bar\n  aws:\n    AWS_ACCESS_KEY_ID: key\n";
+        let profiles = parse_profile_names(yaml);
+        assert_eq!(profiles, vec!["aws", "nas"]);
+    }
+
+    #[test]
+    fn parse_profiles_empty_when_no_credentials_key() {
+        let profiles = parse_profile_names("restic_password: secret\n");
+        assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn parse_profiles_empty_on_invalid_yaml() {
+        let profiles = parse_profile_names("not: valid: yaml: [");
+        assert!(profiles.is_empty());
     }
 }
