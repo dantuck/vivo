@@ -247,7 +247,7 @@ pub fn check_fuse() -> CheckResult {
         }
     } else {
         CheckResult {
-            label: "FUSE".to_string(),
+            label: "FUSE (fusermount)".to_string(),
             status: CheckStatus::Fail,
             detail: Some(
                 "fusermount not found — install FUSE: sudo apt install fuse  OR  sudo dnf install fuse"
@@ -428,6 +428,7 @@ tasks {{
         assert!(matches!(r.status, CheckStatus::Ok));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn check_fuse_fails_when_path_is_empty() {
         let original = std::env::var("PATH").unwrap_or_default();
