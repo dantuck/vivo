@@ -282,6 +282,78 @@ impl BackupConfig {
     }
 }
 
+fn apply_profile_to_yaml(
+    yaml: &str,
+    profile: &str,
+    credentials: &HashMap<String, String>,
+) -> Result<String, String> {
+    let mut doc: serde_yml::Value = serde_yml::from_str(yaml)
+        .map_err(|e| format!("could not parse secrets: {e}"))?;
+
+    let creds_map = doc
+        .get_mut("credentials")
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or("secrets missing 'credentials' map")?;
+
+    let entry = creds_map
+        .entry(serde_yml::Value::String(profile.to_string()))
+        .or_insert(serde_yml::Value::Mapping(serde_yml::Mapping::new()));
+
+    let entry_map = entry
+        .as_mapping_mut()
+        .ok_or_else(|| format!("'credentials.{profile}' is not a map"))?;
+
+    for (k, v) in credentials {
+        entry_map.insert(
+            serde_yml::Value::String(k.clone()),
+            serde_yml::Value::String(v.clone()),
+        );
+    }
+
+    serde_yml::to_string(&doc).map_err(|e| format!("could not serialize secrets: {e}"))
+}
+
+pub fn write_profile_to_secrets(
+    secrets_path: &str,
+    profile: &str,
+    credentials: &HashMap<String, String>,
+) -> Result<(), String> {
+    let decrypted = decrypt_sops_file(secrets_path)?;
+
+    #[derive(serde::Deserialize)]
+    struct DataWrapper {
+        data: String,
+    }
+    let inner_yaml = match serde_yml::from_str::<DataWrapper>(&decrypted) {
+        Ok(w) => w.data,
+        Err(_) => decrypted,
+    };
+
+    let updated_yaml = apply_profile_to_yaml(&inner_yaml, profile, credentials)?;
+
+    let recipient = age_public_key()
+        .ok_or("no age key found — run: age-keygen -o ~/.config/sops/age/keys.txt")?;
+
+    let tmp_path = env::temp_dir().join("vivo-secrets-write-profile.yaml");
+    fs::write(&tmp_path, &updated_yaml)
+        .map_err(|e| format!("could not write temp file: {e}"))?;
+
+    let result = SysCommand::new("sops")
+        .args(["-e", "--age", &recipient, "--output", secrets_path])
+        .arg(&tmp_path)
+        .output();
+    let _ = fs::remove_file(&tmp_path);
+
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!(
+            "sops encryption failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        )),
+        Err(e) => Err(format!("could not run sops: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +424,39 @@ mod tests {
         "#);
         let remotes = cfg.all_remotes();
         assert_eq!(remotes.len(), 2);
+    }
+
+    #[test]
+    fn apply_profile_inserts_new_profile() {
+        let yaml = "restic_password: s3cr3t\ncredentials:\n  existing:\n    KEY: val\n";
+        let mut creds = std::collections::HashMap::new();
+        creds.insert("AWS_ACCESS_KEY_ID".to_string(), "kid".to_string());
+        creds.insert("AWS_SECRET_ACCESS_KEY".to_string(), "sak".to_string());
+        let result = apply_profile_to_yaml(yaml, "new-s3", &creds).unwrap();
+        let parsed: serde_yml::Value = serde_yml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["credentials"]["new-s3"]["AWS_ACCESS_KEY_ID"].as_str().unwrap(),
+            "kid"
+        );
+    }
+
+    #[test]
+    fn apply_profile_overwrites_existing() {
+        let yaml = "restic_password: s3cr3t\ncredentials:\n  aws:\n    AWS_ACCESS_KEY_ID: old\n";
+        let mut creds = std::collections::HashMap::new();
+        creds.insert("AWS_ACCESS_KEY_ID".to_string(), "new".to_string());
+        let result = apply_profile_to_yaml(yaml, "aws", &creds).unwrap();
+        let parsed: serde_yml::Value = serde_yml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["credentials"]["aws"]["AWS_ACCESS_KEY_ID"].as_str().unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn apply_profile_errors_without_credentials_key() {
+        let yaml = "restic_password: s3cr3t\n";
+        let creds = std::collections::HashMap::new();
+        assert!(apply_profile_to_yaml(yaml, "x", &creds).is_err());
     }
 }
