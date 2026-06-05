@@ -79,12 +79,14 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let remotes_min = (1 + app.current_remotes().len()) as u16;
+    let calls_min = (1 + app.current_calls().len()) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(6),
-            Constraint::Min(0),
-            Constraint::Min(0),
+            Constraint::Min(remotes_min),
+            Constraint::Min(calls_min),
         ])
         .split(inner);
 
