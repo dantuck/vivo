@@ -1,5 +1,23 @@
 // src/tui/credentials.rs
 
+use std::collections::HashMap;
+
+use inquire::InquireError;
+
+const CREATE_NEW: &str = "[+ Create new profile]";
+
+macro_rules! ask {
+    ($expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+                return Ok(None)
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+}
+
 #[derive(Debug, PartialEq)]
 pub enum CredentialType {
     B2,
@@ -7,7 +25,6 @@ pub enum CredentialType {
     Generic,
 }
 
-#[allow(dead_code)]
 pub fn detect_url_type(url: &str) -> CredentialType {
     if url.starts_with("b2:") {
         CredentialType::B2
@@ -63,6 +80,95 @@ pub fn list_profiles(secrets_path: &str) -> Vec<String> {
         Ok(decrypted) => parse_profile_names(&decrypted),
         Err(_) => vec![],
     }
+}
+
+/// Shows an inquire::Select of existing profiles + "[+ Create new profile]".
+/// Returns Ok(Some(name)) with the chosen/created profile name,
+/// Ok(None) if the user cancelled, or Err on a real error.
+pub fn select_or_create_profile(url: &str, secrets_path: &str) -> Result<Option<String>, String> {
+    let mut options = list_profiles(secrets_path);
+    options.push(CREATE_NEW.to_string());
+
+    let choice = ask!(inquire::Select::new("Credentials profile:", options).prompt());
+
+    if choice == CREATE_NEW {
+        create_profile_interactive(url, secrets_path)
+    } else {
+        Ok(Some(choice))
+    }
+}
+
+fn create_profile_interactive(url: &str, secrets_path: &str) -> Result<Option<String>, String> {
+    let suggestion = suggest_profile_name(url);
+    let profile_name = ask!(inquire::Text::new("Profile name:")
+        .with_initial_value(&suggestion)
+        .prompt());
+
+    if profile_name.trim().is_empty() {
+        return Err("profile name cannot be empty".to_string());
+    }
+
+    // Warn on duplicate
+    let existing = list_profiles(secrets_path);
+    if existing.contains(&profile_name) {
+        let overwrite = ask!(inquire::Confirm::new(&format!(
+            "Profile '{profile_name}' already exists. Overwrite?"
+        ))
+        .with_default(false)
+        .prompt());
+        if !overwrite {
+            return Ok(None);
+        }
+    }
+
+    let credentials = match detect_url_type(url) {
+        CredentialType::B2 => {
+            let key_id = ask!(inquire::Password::new("B2 Application Key ID:")
+                .without_confirmation()
+                .prompt());
+            let key = ask!(inquire::Password::new("B2 Application Key:")
+                .without_confirmation()
+                .prompt());
+            let mut m = HashMap::new();
+            m.insert("B2_APPLICATION_KEY_ID".to_string(), key_id);
+            m.insert("B2_APPLICATION_KEY".to_string(), key);
+            m
+        }
+        CredentialType::S3 => {
+            let key_id = ask!(inquire::Password::new("AWS Access Key ID:")
+                .without_confirmation()
+                .prompt());
+            let secret = ask!(inquire::Password::new("AWS Secret Access Key:")
+                .without_confirmation()
+                .prompt());
+            let mut m = HashMap::new();
+            m.insert("AWS_ACCESS_KEY_ID".to_string(), key_id);
+            m.insert("AWS_SECRET_ACCESS_KEY".to_string(), secret);
+            m
+        }
+        CredentialType::Generic => {
+            let mut m = HashMap::new();
+            loop {
+                let key =
+                    ask!(inquire::Text::new("Env var name (blank to finish):").prompt());
+                if key.trim().is_empty() {
+                    break;
+                }
+                let value = ask!(inquire::Password::new(&format!("Value for {key}:"))
+                    .without_confirmation()
+                    .prompt());
+                m.insert(key, value);
+            }
+            if m.is_empty() {
+                return Err("at least one credential is required".to_string());
+            }
+            m
+        }
+    };
+
+    crate::backup_config::write_profile_to_secrets(secrets_path, &profile_name, &credentials)?;
+    println!("Saved profile '{profile_name}' to secrets.");
+    Ok(Some(profile_name))
 }
 
 #[cfg(test)]
