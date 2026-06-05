@@ -1,8 +1,7 @@
-default-task "backup"
+default-task "backup-main"
 
 tasks {
-    task "backup" {
-        description "Sample backup task for development"
+    task "backup-main" {description "Sample backup task for development"
         backup {
             repo "/tmp/vivo-dev-repo"
             directory "/tmp/vivo-test-data"
@@ -11,6 +10,9 @@ tasks {
                 weekly 5
                 monthly 12
                 yearly 2
+            }
+remote "rustfs:https://rustfs.cinnamon-trout.ts.net/test-backup"{
+credentials "rustfs"
             }
         }
     }
