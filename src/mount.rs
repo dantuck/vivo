@@ -53,6 +53,60 @@ pub fn build_entries(tasks: &[Task]) -> Vec<MountEntry> {
     entries
 }
 
+pub fn mount_point_path(mount_path: Option<&str>, task_name: &str) -> Result<(PathBuf, bool), String> {
+    match mount_path {
+        Some(p) => {
+            let path = PathBuf::from(p);
+            fs::create_dir_all(&path)
+                .map_err(|e| format!("could not create mount point: {e}"))?;
+            Ok((path, false))
+        }
+        None => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let path = PathBuf::from(format!("/tmp/vivo-mount-{task_name}-{ts}"));
+            fs::create_dir_all(&path)
+                .map_err(|e| format!("could not create temp mount point: {e}"))?;
+            Ok((path, true))
+        }
+    }
+}
+
+pub fn check_mount_point_valid(path: &Path) -> doctor::CheckResult {
+    let label = format!("mount point ({})", path.display());
+    if !path.exists() {
+        return doctor::CheckResult {
+            label,
+            status: doctor::CheckStatus::Warn,
+            detail: Some("directory does not exist (will be created)".to_string()),
+        };
+    }
+    match fs::read_dir(path) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                doctor::CheckResult {
+                    label,
+                    status: doctor::CheckStatus::Warn,
+                    detail: Some("directory is not empty".to_string()),
+                }
+            } else {
+                doctor::CheckResult {
+                    label,
+                    status: doctor::CheckStatus::Ok,
+                    detail: None,
+                }
+            }
+        }
+        Err(e) => doctor::CheckResult {
+            label,
+            status: doctor::CheckStatus::Warn,
+            detail: Some(format!("cannot read directory: {e}")),
+        },
+    }
+}
+
 pub fn run(_config_path: &str, _secrets_path: &str, _mount_path: Option<&str>) -> Result<(), String> {
     todo!("implemented in Task 5")
 }
@@ -159,5 +213,45 @@ tasks {
             normalize_repo_url("/home/user/.local/share/restic/main"),
             "/home/user/.local/share/restic/main"
         );
+    }
+
+    #[test]
+    fn mount_point_path_explicit_creates_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("mount");
+        let (path, owned) = mount_point_path(Some(subdir.to_str().unwrap()), "backup").unwrap();
+        assert_eq!(path, subdir);
+        assert!(!owned, "explicit path should not be owned");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn mount_point_path_auto_creates_temp() {
+        let (path, owned) = mount_point_path(None, "mytask").unwrap();
+        assert!(owned, "auto path should be owned");
+        assert!(path.to_string_lossy().contains("vivo-mount-mytask-"));
+        assert!(path.exists());
+        let _ = std::fs::remove_dir(&path);
+    }
+
+    #[test]
+    fn check_mount_point_valid_ok_for_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = check_mount_point_valid(dir.path());
+        assert!(matches!(r.status, doctor::CheckStatus::Ok));
+    }
+
+    #[test]
+    fn check_mount_point_valid_warns_for_nonempty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "x").unwrap();
+        let r = check_mount_point_valid(dir.path());
+        assert!(matches!(r.status, doctor::CheckStatus::Warn));
+    }
+
+    #[test]
+    fn check_mount_point_valid_warns_for_missing_dir() {
+        let r = check_mount_point_valid(Path::new("/tmp/__vivo_no_such_dir_xyz__"));
+        assert!(matches!(r.status, doctor::CheckStatus::Warn));
     }
 }
