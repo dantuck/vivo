@@ -2,9 +2,16 @@ use is_terminal::IsTerminal;
 use log::debug;
 use std::{env, fs, path::Path, process};
 use vivo::{
-    age_public_key, build_cli, config_path_from, decrypt_sops_file,
+    age_public_key, build_cli, config_path_from, decrypt_sops_file, expand_env_vars,
     import_b2_credentials, secrets_path_from, BackupConfig, VivoConfig,
 };
+
+fn ensure_path(path: &str) {
+    let expanded = expand_env_vars(path);
+    if !expanded.is_empty() {
+        let _ = fs::create_dir_all(&expanded);
+    }
+}
 
 const CONFIG_TEMPLATE: &str = r#"default-task "backup"
 
@@ -301,11 +308,15 @@ fn cmd_task_add(config_path: &str, matches: &clap::ArgMatches) {
         }
     };
 
-    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo, directory, exclude_file }) {
+    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo: repo.clone(), directory: directory.clone(), exclude_file }) {
         Ok(new_kdl) => {
             if let Err(e) = fs::write(config_path, new_kdl) {
                 eprintln!("error: could not write config: {e}");
                 process::exit(1);
+            }
+            ensure_path(&repo);
+            if let Some(dir) = &directory {
+                ensure_path(dir);
             }
             println!("Added task '{name}'.");
         }
@@ -573,6 +584,14 @@ fn main() {
                 Some(("list", args)) => cmd_remote_list(&config_path, args),
                 Some(("remove", args)) => cmd_remote_remove(&config_path, args),
                 _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("mount", sub)) => {
+            let mount_path = sub.get_one::<String>("path").map(String::as_str);
+            if let Err(e) = vivo::mount::run(&config_path, &secrets_path, mount_path) {
+                eprintln!("error: {e}");
+                process::exit(1);
             }
             return;
         }

@@ -95,6 +95,15 @@ pub fn build_cli() -> Command {
         .subcommand(Command::new("update").about("Update vivo to the latest release"))
         .subcommand(Command::new("manage").about("Open the interactive config manager (TUI)"))
         .subcommand(
+            Command::new("mount")
+                .about("Mount a backup repository as a FUSE filesystem")
+                .arg(
+                    Arg::new("path")
+                        .help("Mount point directory (default: auto temp dir under /tmp)")
+                        .required(false),
+                ),
+        )
+        .subcommand(
             Command::new("task")
                 .about("Manage backup tasks")
                 .subcommand_required(true)
