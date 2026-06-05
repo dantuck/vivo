@@ -1,4 +1,4 @@
-pub(crate) mod backup;
+pub mod backup;
 pub(crate) mod task;
 
 use std::collections::HashMap;

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -49,7 +51,7 @@ struct BackupRetention {
 
 static ENV_VAR_RE: OnceLock<Regex> = OnceLock::new();
 
-fn expand_env_vars(path: &str) -> String {
+pub fn expand_env_vars(path: &str) -> String {
     let re = ENV_VAR_RE.get_or_init(|| Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap());
     re.replace_all(path, |caps: &regex::Captures| {
         env::var(&caps[1]).unwrap_or_else(|_| caps[0].to_string())
@@ -200,6 +202,27 @@ impl Backup {
         }
     }
 
+    fn is_local_repo(repo: &str) -> bool {
+        !repo.contains(':')
+            || repo.starts_with('/')
+            || repo.starts_with('.')
+            || repo.starts_with('~')
+    }
+
+    fn ensure_local_repo_init(&self) -> Result<(), String> {
+        let repo = expand_env_vars(&self.repo);
+        if !Self::is_local_repo(&repo) {
+            return Ok(());
+        }
+        let config_file = Path::new(&repo).join("config");
+        if !config_file.exists() {
+            fs::create_dir_all(&repo)
+                .map_err(|e| format!("could not create repo directory '{repo}': {e}"))?;
+            execute_command("restic", vec!["init".to_string(), "-r".to_string(), repo])?;
+        }
+        Ok(())
+    }
+
     pub fn run(
         &self,
         config: &VivoConfig,
@@ -208,6 +231,7 @@ impl Backup {
         let dry_run = config.dry_run || self.dry_run.unwrap_or(false);
 
         if config.start_step <= Step::Backup {
+            self.ensure_local_repo_init()?;
             self.backup(dry_run)?;
         }
         if config.start_step <= Step::Check {
