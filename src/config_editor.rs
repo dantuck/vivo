@@ -440,22 +440,11 @@ pub fn move_call_up(kdl: &str, task_name: &str, index: usize) -> Result<String, 
 }
 
 pub fn move_call_down(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
-    let doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
-    let call_count = doc
-        .get("tasks")
-        .and_then(|t| t.children())
-        .and_then(|c| {
-            c.nodes()
-                .iter()
-                .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        })
-        .and_then(|t| t.children())
-        .map(|c| c.nodes().iter().filter(|n| n.name().value() == "calls").count())
-        .unwrap_or(0);
-    if index + 1 >= call_count {
-        return Ok(kdl.to_string());
+    match swap_calls(kdl, task_name, index, index + 1) {
+        Ok(result) => Ok(result),
+        Err(e) if e.contains("call at index") && e.contains("not found") => Ok(kdl.to_string()),
+        Err(e) => Err(e),
     }
-    swap_calls(kdl, task_name, index, index + 1)
 }
 
 fn swap_calls(kdl: &str, task_name: &str, a: usize, b: usize) -> Result<String, String> {
