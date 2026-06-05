@@ -63,6 +63,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') => handle_edit(app),
         KeyCode::Char('o') => handle_open_editor(app),
         KeyCode::Char('t') => handle_test_remote(app),
+        KeyCode::Char('s') => handle_set_default(app),
         _ => {}
     }
 }
@@ -514,6 +515,30 @@ fn handle_test_remote(app: &mut App) {
         return;
     }
     run_prompt(app, test_remote_prompt, false);
+}
+
+fn handle_set_default(app: &mut App) {
+    if app.focused_pane != Pane::Tasks {
+        return;
+    }
+    let task_name = match app.tasks.get(app.selected_task) {
+        Some(t) => t.name.clone(),
+        None => return,
+    };
+    if task_name == app.default_task {
+        app.set_status("Already the default task.".to_string());
+        return;
+    }
+    run_prompt(
+        app,
+        move |a| {
+            let kdl = std::fs::read_to_string(&a.config_path).map_err(|e| e.to_string())?;
+            let new_kdl = crate::config_editor::set_default_task(&kdl, &task_name)?;
+            std::fs::write(&a.config_path, new_kdl).map_err(|e| e.to_string())?;
+            Ok(format!("Set '{task_name}' as default task."))
+        },
+        true,
+    );
 }
 
 fn test_remote_prompt(app: &App) -> Result<String, String> {
