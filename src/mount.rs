@@ -224,6 +224,7 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     // restic may have failed to unmount if files were open (EBUSY). Attempt a lazy
     // unmount so the kernel detaches the FUSE mount even with open file handles.
     lazy_unmount(&mount_point_str);
+    println!("Unmounted {mount_point_str}.");
 
     if owned {
         let _ = fs::remove_dir(&mount_point);
