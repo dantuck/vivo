@@ -1,4 +1,5 @@
 mod app;
+mod credentials;
 mod events;
 mod ui;
 
@@ -41,6 +42,7 @@ fn run_loop<B: ratatui::backend::Backend>(
     app: &mut App,
 ) -> Result<(), String> {
     loop {
+        app.tick_status();
         if app.needs_clear {
             terminal.clear().map_err(|e| e.to_string())?;
             app.needs_clear = false;
