@@ -447,6 +447,33 @@ pub fn move_call_down(kdl: &str, task_name: &str, index: usize) -> Result<String
     }
 }
 
+pub fn set_default_task(kdl: &str, name: &str) -> Result<String, String> {
+    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+
+    let task_exists = doc
+        .get("tasks")
+        .and_then(|t| t.children())
+        .map(|c| {
+            c.nodes()
+                .iter()
+                .any(|n| n.name().value() == "task" && first_arg(n) == Some(name))
+        })
+        .unwrap_or(false);
+
+    if !task_exists {
+        return Err(format!("task '{name}' not found"));
+    }
+
+    let node = doc
+        .get_mut("default-task")
+        .ok_or("config missing 'default-task' node")?;
+    if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+        *entry = str_entry(name);
+    }
+
+    Ok(doc.to_string())
+}
+
 fn swap_calls(kdl: &str, task_name: &str, a: usize, b: usize) -> Result<String, String> {
     let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
     let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
@@ -1043,5 +1070,18 @@ tasks {
     fn move_call_down_noop_at_last_index() {
         let result = move_call_down(MULTI_CALLS_KDL, "main", 2).unwrap();
         assert_eq!(result, MULTI_CALLS_KDL);
+    }
+
+    #[test]
+    fn set_default_task_updates_node() {
+        let result = set_default_task(TWO_TASKS_KDL, "photos").unwrap();
+        assert!(result.contains(r#"default-task "photos""#));
+        assert!(!result.contains(r#"default-task "backup""#));
+    }
+
+    #[test]
+    fn set_default_task_errors_when_task_not_found() {
+        let err = set_default_task(TWO_TASKS_KDL, "nonexistent").unwrap_err();
+        assert!(err.contains("not found"));
     }
 }
