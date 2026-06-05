@@ -11,7 +11,7 @@ pub enum CredentialType {
 pub fn detect_url_type(url: &str) -> CredentialType {
     if url.starts_with("b2:") {
         CredentialType::B2
-    } else if url.starts_with("s3:") || url.starts_with("rustfs:") || url.starts_with("s3+https:") {
+    } else if url.starts_with("s3:") || url.starts_with("rustfs:") {
         CredentialType::S3
     } else {
         CredentialType::Generic
@@ -32,7 +32,11 @@ mod tests {
     fn detect_s3_prefixes() {
         assert_eq!(detect_url_type("s3:https://s3.amazonaws.com/bucket"), CredentialType::S3);
         assert_eq!(detect_url_type("rustfs:https://nas.example.com/bucket"), CredentialType::S3);
-        assert_eq!(detect_url_type("s3+https://nas.example.com/bucket"), CredentialType::S3);
+    }
+
+    #[test]
+    fn detect_s3_plus_https_is_generic() {
+        assert_eq!(detect_url_type("s3+https://nas.example.com/bucket"), CredentialType::Generic);
     }
 
     #[test]
