@@ -71,7 +71,9 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title(title)
         .border_style(focused_border(
-            app.focused_pane == Pane::Fields || app.focused_pane == Pane::Remotes,
+            app.focused_pane == Pane::Fields
+                || app.focused_pane == Pane::Remotes
+                || app.focused_pane == Pane::Calls,
         ));
 
     let inner = block.inner(area);
@@ -79,11 +81,16 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Min(0),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     draw_task_fields(f, app, chunks[0]);
     draw_remotes_list(f, app, chunks[1]);
+    draw_calls_list(f, app, chunks[2]);
 }
 
 fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
@@ -160,6 +167,43 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, chunks[1], &mut state);
 }
 
+fn draw_calls_list(f: &mut Frame, app: &App, area: Rect) {
+    let calls = app.current_calls();
+    let count = calls.len();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let header_style = if app.focused_pane == Pane::Calls {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("Calls ({count}):"),
+            header_style,
+        )])),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem> = calls
+        .iter()
+        .map(|c| ListItem::new(format!("  {c}")))
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    let mut state = ListState::default();
+    if !calls.is_empty() && app.focused_pane == Pane::Calls {
+        state.select(Some(app.selected_call.min(calls.len() - 1)));
+    }
+    f.render_stateful_widget(list, chunks[1], &mut state);
+}
+
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let default_hint = match app.focused_pane {
         Pane::Tasks => {
@@ -170,6 +214,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         }
         Pane::Remotes => {
             "[a] add  [d] delete  [e] edit  [t] test  [Tab] switch pane  [q] quit"
+        }
+        Pane::Calls => {
+            "[a] add  [d] delete  [Ctrl+↑↓] reorder  [Tab] switch pane  [q] quit"
         }
     };
     let status = app.status_message.as_deref().unwrap_or(default_hint);
