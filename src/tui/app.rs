@@ -1,10 +1,16 @@
+use std::time::{Duration, Instant};
+
 use crate::backup_config::BackupConfig;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Pane {
     Tasks,
+    Fields,
     Remotes,
 }
+
+pub const FIELD_NAMES: &[&str] =
+    &["Name", "Description", "Repo", "Directory", "Exclude file", "Files from"];
 
 pub struct TaskEntry {
     pub name: String,
@@ -25,10 +31,12 @@ pub struct App {
     pub tasks: Vec<TaskEntry>,
     pub selected_task: usize,
     pub selected_remote: usize,
+    pub selected_field: usize,
     pub focused_pane: Pane,
     pub config_path: String,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    pub status_expires_at: Option<Instant>,
     pub needs_clear: bool,
 }
 
@@ -59,11 +67,27 @@ impl App {
             tasks,
             selected_task: 0,
             selected_remote: 0,
+            selected_field: 0,
             focused_pane: Pane::Tasks,
             config_path,
             should_quit: false,
             status_message: None,
+            status_expires_at: None,
             needs_clear: false,
+        }
+    }
+
+    pub fn set_status(&mut self, msg: String) {
+        self.status_expires_at = Some(Instant::now() + Duration::from_secs(2));
+        self.status_message = Some(msg);
+    }
+
+    pub fn tick_status(&mut self) {
+        if let Some(exp) = self.status_expires_at {
+            if Instant::now() >= exp {
+                self.status_message = None;
+                self.status_expires_at = None;
+            }
         }
     }
 
@@ -81,16 +105,20 @@ impl App {
             {
                 let prev_task = self.selected_task;
                 let prev_remote = self.selected_remote;
+                let prev_field = self.selected_field;
                 let prev_pane = self.focused_pane;
                 let prev_msg = self.status_message.take();
+                let prev_exp = self.status_expires_at;
                 let new = App::new(&config, self.config_path.clone());
                 *self = new;
                 self.selected_task =
                     prev_task.min(self.tasks.len().saturating_sub(1));
                 self.selected_remote =
                     prev_remote.min(self.current_remotes().len().saturating_sub(1));
+                self.selected_field = prev_field.min(FIELD_NAMES.len() - 1);
                 self.focused_pane = prev_pane;
                 self.status_message = prev_msg;
+                self.status_expires_at = prev_exp;
             }
         }
     }

@@ -7,6 +7,16 @@ use ratatui::{
 };
 use super::app::{App, Pane};
 
+// Pre-padded to 14 chars — avoids a format! allocation per field per frame.
+const FIELD_LABELS: [&str; 6] = [
+    "Name          ",
+    "Description   ",
+    "Repo          ",
+    "Directory     ",
+    "Exclude file  ",
+    "Files from    ",
+];
+
 pub fn draw(f: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -60,7 +70,9 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(focused_border(app.focused_pane == Pane::Remotes));
+        .border_style(focused_border(
+            app.focused_pane == Pane::Fields || app.focused_pane == Pane::Remotes,
+        ));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -80,28 +92,33 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
-    let label = Style::default().fg(Color::DarkGray);
-    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let in_fields = app.focused_pane == Pane::Fields;
+    let label_style = Style::default().fg(Color::DarkGray);
+    let dim = label_style.add_modifier(Modifier::DIM);
+    let highlight = Style::default().add_modifier(Modifier::REVERSED);
 
-    let field = |name: &'static str, val: Option<&str>| -> Line<'static> {
-        let value_span = match val {
-            Some(v) if !v.is_empty() => Span::raw(v.to_string()),
-            _ => Span::styled("(none)", dim),
-        };
-        Line::from(vec![
-            Span::styled(format!("{name:<14}"), label),
-            value_span,
-        ])
-    };
-
-    let lines = vec![
-        field("Name", Some(task.name.as_str())),
-        field("Description", task.description.as_deref()),
-        field("Repo", task.repo.as_deref()),
-        field("Directory", task.directory.as_deref()),
-        field("Exclude file", task.exclude_file.as_deref()),
-        field("Files from", task.files_from.as_deref()),
+    let values: [Option<&str>; 6] = [
+        Some(task.name.as_str()),
+        task.description.as_deref(),
+        task.repo.as_deref(),
+        task.directory.as_deref(),
+        task.exclude_file.as_deref(),
+        task.files_from.as_deref(),
     ];
+
+    let lines: Vec<Line> = FIELD_LABELS
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let selected = in_fields && i == app.selected_field;
+            let value_span = match values[i] {
+                Some(v) if !v.is_empty() => Span::raw(v.to_string()),
+                _ => Span::styled("(none)", dim),
+            };
+            let line = Line::from(vec![Span::styled(*label, label_style), value_span]);
+            if selected { line.style(highlight) } else { line }
+        })
+        .collect();
 
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -146,10 +163,13 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let default_hint = match app.focused_pane {
         Pane::Tasks => {
-            "[a] add  [d] delete  [e] edit task  [o] open in $EDITOR  [Tab] switch pane  [q] quit"
+            "[a] add  [d] delete  [e] edit all  [o] open in $EDITOR  [Tab] switch pane  [q] quit"
+        }
+        Pane::Fields => {
+            "[↑↓] select field  [Enter/e] edit field  [Tab] switch pane  [q] quit"
         }
         Pane::Remotes => {
-            "[a] add remote  [d] delete  [e] edit remote  [Tab] switch pane  [q] quit"
+            "[a] add  [d] delete  [e] edit  [t] test  [Tab] switch pane  [q] quit"
         }
     };
     let status = app.status_message.as_deref().unwrap_or(default_hint);
