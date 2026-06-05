@@ -464,6 +464,15 @@ fn delete_call_prompt(app: &App) -> Result<String, String> {
         .cloned()
         .ok_or("no call selected")?;
 
+    let ok = ask!(inquire::Confirm::new(&format!(
+        "Remove call to '{call_name}' from task '{task_name}'?"
+    ))
+    .with_default(false)
+    .prompt());
+    if !ok {
+        return Ok("Cancelled.".to_string());
+    }
+
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::remove_call(&kdl, &task_name, app.selected_call)?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
