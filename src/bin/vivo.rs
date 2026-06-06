@@ -308,7 +308,7 @@ fn cmd_task_add(config_path: &str, matches: &clap::ArgMatches) {
         }
     };
 
-    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo: repo.clone(), directory: directory.clone(), exclude_file }) {
+    match vivo::add_task(&kdl, vivo::TaskSpec { name: name.clone(), repo: Some(repo.clone()), directory: directory.clone(), exclude_file }) {
         Ok(new_kdl) => {
             if let Err(e) = fs::write(config_path, new_kdl) {
                 eprintln!("error: could not write config: {e}");

@@ -2,7 +2,7 @@ use kdl::{KdlDocument, KdlEntry, KdlEntryFormat, KdlNode, KdlValue};
 
 pub struct TaskSpec {
     pub name: String,
-    pub repo: String,
+    pub repo: Option<String>,
     pub directory: Option<String>,
     pub exclude_file: Option<String>,
 }
@@ -92,18 +92,20 @@ pub fn add_task(kdl: &str, spec: TaskSpec) -> Result<String, String> {
     let mut task = KdlNode::new("task");
     task.push(str_entry(&spec.name));
 
-    let mut backup = KdlNode::new("backup");
-    {
-        let bc = backup.ensure_children();
-        bc.nodes_mut().push(str_node("repo", &spec.repo));
-        if let Some(dir) = &spec.directory {
-            bc.nodes_mut().push(str_node("directory", dir));
+    if let Some(repo) = &spec.repo {
+        let mut backup = KdlNode::new("backup");
+        {
+            let bc = backup.ensure_children();
+            bc.nodes_mut().push(str_node("repo", repo));
+            if let Some(dir) = &spec.directory {
+                bc.nodes_mut().push(str_node("directory", dir));
+            }
+            if let Some(excl) = &spec.exclude_file {
+                bc.nodes_mut().push(str_node("exclude-file", excl));
+            }
         }
-        if let Some(excl) = &spec.exclude_file {
-            bc.nodes_mut().push(str_node("exclude-file", excl));
-        }
+        task.ensure_children().nodes_mut().push(backup);
     }
-    task.ensure_children().nodes_mut().push(backup);
     children.nodes_mut().push(task);
 
     Ok(doc.to_string())
@@ -521,7 +523,7 @@ tasks {
             BASE_KDL,
             TaskSpec {
                 name: "photos".to_string(),
-                repo: "/tmp/photos".to_string(),
+                repo: Some("/tmp/photos".to_string()),
                 directory: Some("/home/user/Photos".to_string()),
                 exclude_file: None,
             },
@@ -539,7 +541,7 @@ tasks {
             BASE_KDL,
             TaskSpec {
                 name: "docs".to_string(),
-                repo: "/tmp/docs".to_string(),
+                repo: Some("/tmp/docs".to_string()),
                 directory: None,
                 exclude_file: Some("/home/user/.vivoexclude".to_string()),
             },
@@ -554,13 +556,31 @@ tasks {
             BASE_KDL,
             TaskSpec {
                 name: "backup".to_string(),
-                repo: "/tmp/other".to_string(),
+                repo: Some("/tmp/other".to_string()),
                 directory: None,
                 exclude_file: None,
             },
         )
         .unwrap_err();
         assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn add_task_without_repo_creates_no_backup_block() {
+        let result = add_task(
+            BASE_KDL,
+            TaskSpec {
+                name: "orchestrator".to_string(),
+                repo: None,
+                directory: None,
+                exclude_file: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains(r#"task "orchestrator""#));
+        // No backup block should be created for the orchestrator task
+        let orchestrator_start = result.find(r#"task "orchestrator""#).unwrap();
+        assert!(!result[orchestrator_start..].contains("backup {"));
     }
 
     const TWO_TASKS_KDL: &str = r#"default-task "backup"

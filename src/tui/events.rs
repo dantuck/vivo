@@ -175,11 +175,19 @@ fn handle_add(app: &mut App) {
 
 fn add_task_prompt(app: &App) -> Result<String, String> {
     let name = ask!(inquire::Text::new("Task name:").prompt());
-    let repo = ask!(inquire::Text::new("Restic repo path:").prompt());
-    let dir_raw = ask!(inquire::Text::new("Directory to back up (blank to skip):")
-        .with_help_message("Leave blank to skip")
+    let repo_raw = ask!(inquire::Text::new("Restic repo path (blank for calls-only task):")
+        .with_help_message("Leave blank to create a task that only calls other tasks")
         .prompt());
-    let directory = if dir_raw.is_empty() { None } else { Some(dir_raw) };
+    let repo = if repo_raw.is_empty() { None } else { Some(repo_raw) };
+
+    let directory = if repo.is_some() {
+        let dir_raw = ask!(inquire::Text::new("Directory to back up (blank to skip):")
+            .with_help_message("Leave blank to skip")
+            .prompt());
+        if dir_raw.is_empty() { None } else { Some(dir_raw) }
+    } else {
+        None
+    };
 
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::add_task(
@@ -187,7 +195,9 @@ fn add_task_prompt(app: &App) -> Result<String, String> {
         TaskSpec { name: name.clone(), repo: repo.clone(), directory: directory.clone(), exclude_file: None },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
-    ensure_path(&repo);
+    if let Some(r) = &repo {
+        ensure_path(r);
+    }
     if let Some(dir) = &directory {
         ensure_path(dir);
     }

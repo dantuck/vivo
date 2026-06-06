@@ -1,4 +1,4 @@
-default-task "backup-main"
+default-task "backup"
 
 tasks {
     task "backup-main" {description "Sample backup task for development"
@@ -15,5 +15,8 @@ remote "rustfs:https://rustfs.cinnamon-trout.ts.net/test-backup"{
 credentials "rustfs"
             }
         }
+    }
+    task "backup" {
+        calls "backup-main"
     }
 }
