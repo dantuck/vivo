@@ -467,9 +467,12 @@ pub fn set_default_task(kdl: &str, name: &str) -> Result<String, String> {
     let node = doc
         .get_mut("default-task")
         .ok_or("config missing 'default-task' node")?;
-    if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
-        *entry = str_entry(name);
-    }
+    let entry = node
+        .entries_mut()
+        .iter_mut()
+        .find(|e| e.name().is_none())
+        .ok_or("'default-task' node has no value")?;
+    *entry = str_entry(name);
 
     Ok(doc.to_string())
 }
