@@ -103,6 +103,23 @@ vivo secrets edit   # Edit secrets with sops
 vivo secrets show   # Decrypt and print secrets to stdout
 ```
 
+### Interactive TUI
+
+```sh
+vivo manage
+```
+
+Opens a full-screen config manager with four navigable panes (Tab to cycle):
+
+| Pane | Keys |
+|---|---|
+| **Tasks** | `a` add · `d` delete · `e` edit all fields · `s` set as default · `o` open in `$EDITOR` |
+| **Fields** | `↑↓` select field · `Enter`/`e` edit field |
+| **Remotes** | `a` add · `d` delete · `e` edit · `t` test connection |
+| **Calls** | `a` add · `d` delete · `Ctrl+↑↓` reorder |
+
+The default task (run when no task name is given) is marked with `*` in the Tasks pane. Leaving the repo path blank when adding a task creates a calls-only orchestrator task with no backup block.
+
 ### Step control
 
 Use `--start-step` / `-S` to resume a backup from a specific phase without re-running earlier ones:

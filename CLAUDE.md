@@ -70,3 +70,12 @@ tasks {
 - `vivo init` — checks prerequisites (restic, sops, age key) and bootstraps config/secrets files
 - `vivo config {init,edit,show}` — manage the KDL backup config file
 - `vivo secrets {init,edit,show}` — manage the SOPS-encrypted secrets file
+- `vivo manage` — full-screen TUI config manager (see below)
+- `vivo mount [path]` — mount a backup repo as a FUSE filesystem
+
+**TUI (`vivo manage`):** Four panes, Tab to cycle: Tasks → Fields → Remotes → Calls → Tasks.
+- `src/tui/app.rs` — `App` state: `tasks`, `default_task`, selection indices per pane, `focused_pane`
+- `src/tui/ui.rs` — ratatui rendering; Tasks list (default marked `*`), Fields (6 fixed rows), Remotes (content-sized), Calls (content-sized)
+- `src/tui/events.rs` — key dispatch; `run_prompt()` suspends/resumes TUI around inquire prompts
+- `src/tui/credentials.rs` — credential profile picker/creator used by remote add/edit
+- `src/config_editor.rs` — pure KDL mutation functions (add/remove/edit task, remote, call; set default task); all return `Result<String, String>`
