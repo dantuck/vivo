@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.0](https://github.com/dantuck/vivo/compare/v0.8.0...v0.9.0) (2026-06-06)
+
+
+### Features
+
+* add add_call/remove_call/move_call_up/down to config_editor ([1cffe64](https://github.com/dantuck/vivo/commit/1cffe6454f7beda94f068204c1d7689e227b32ba))
+* add Pane::Calls, TaskEntry.calls, and App.selected_call ([d61bb53](https://github.com/dantuck/vivo/commit/d61bb5303fad6e97b22f8af61765455ddaabbda6))
+* add s key to set default task in TUI ([2d2bc01](https://github.com/dantuck/vivo/commit/2d2bc01dc0426e7a41befb1e10d3ce8ad03522b3))
+* add set_default_task to config_editor ([5627a2a](https://github.com/dantuck/vivo/commit/5627a2acaa5f4157cb33c2ea0f6d2a7392718de6))
+* expose call_names() accessor on Task ([c2da3c3](https://github.com/dantuck/vivo/commit/c2da3c3a1b70c2aa631dad9eb1b859c0921fd34f))
+* expose default_task field on App ([cf0f769](https://github.com/dantuck/vivo/commit/cf0f76944eb2d8c3468572ca81b80e94a36f8429))
+* mark default task with * in task list ([3cd44e4](https://github.com/dantuck/vivo/commit/3cd44e4d2f4aef25ccb4900ee58782b3608047e9))
+* render Calls section in TUI task detail pane ([e846149](https://github.com/dantuck/vivo/commit/e8461497b571f2440f2f1c34065f2134babdcd18))
+* wire Calls pane events (add/delete/reorder, Tab cycle, navigation) ([b5bc92c](https://github.com/dantuck/vivo/commit/b5bc92cd618c6d18ddc188048c94f800c96a848c))
+
+
+### Bug Fixes
+
+* add confirmation prompt to delete_call_prompt to match Remotes behavior ([d9a4549](https://github.com/dantuck/vivo/commit/d9a4549fded2e4ade8d331d9ab2bc0e62e01fe51))
+* make repo optional when adding a task, supporting calls-only tasks ([42ab511](https://github.com/dantuck/vivo/commit/42ab5117753a27532d008f57d4efb46383dd8e59))
+* move_call_down propagates task-not-found error instead of silent no-op ([9171b6c](https://github.com/dantuck/vivo/commit/9171b6cfbefdfc38689993debbfd40d7103785c3))
+* only update selected_call cursor when move operation succeeds ([b5cb7d9](https://github.com/dantuck/vivo/commit/b5cb7d9c6a7cab812516c2b21c1875de55f1cbbb))
+* propagate error when default-task node has no value ([825c835](https://github.com/dantuck/vivo/commit/825c8353ea5038c8030a013c2284b615dc540e39))
+* **tui:** size Remotes and Calls sections by content count ([97e82d1](https://github.com/dantuck/vivo/commit/97e82d14b28dd1ac3d7b1f38ed07103ed63d911f))
+
 ## [0.8.0](https://github.com/dantuck/vivo/compare/v0.7.0...v0.8.0) (2026-06-05)
 
 
