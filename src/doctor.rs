@@ -184,6 +184,117 @@ pub fn check_s3_sync_tool() -> CheckResult {
     }
 }
 
+enum McInstallMethod {
+    Curl { url: String, install_path: String },
+    Brew,
+    Unsupported,
+}
+
+fn detect_mc_install_method() -> McInstallMethod {
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => McInstallMethod::Curl {
+            url: "https://dl.min.io/client/mc/release/linux-amd64/mc".to_string(),
+            install_path: format!("{home}/.local/bin/mc"),
+        },
+        ("linux", "aarch64") => McInstallMethod::Curl {
+            url: "https://dl.min.io/client/mc/release/linux-arm64/mc".to_string(),
+            install_path: format!("{home}/.local/bin/mc"),
+        },
+        ("macos", _) => McInstallMethod::Brew,
+        _ => McInstallMethod::Unsupported,
+    }
+}
+
+fn run_curl_install(url: &str, install_path: &str) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(install_path).parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let status = process::Command::new("curl")
+        .args(["-fL", url, "-o", install_path])
+        .status()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
+    if !status.success() {
+        return Err(format!("curl exited with status {status}"));
+    }
+    let status = process::Command::new("chmod")
+        .args(["+x", install_path])
+        .status()
+        .map_err(|e| format!("chmod failed: {e}"))?;
+    if !status.success() {
+        return Err(format!("chmod failed with status {status}"));
+    }
+    Ok(())
+}
+
+pub fn fix_s3_sync_tool() -> Result<(), String> {
+    let method = detect_mc_install_method();
+
+    let desc = match &method {
+        McInstallMethod::Curl { url, install_path } => {
+            format!("curl -fL {url} -o {install_path} && chmod +x {install_path}")
+        }
+        McInstallMethod::Brew => "brew install minio/stable/mc".to_string(),
+        McInstallMethod::Unsupported => {
+            println!(
+                "Auto-install is not supported on this platform ({}/{}).",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            println!(
+                "Install mc manually: https://min.io/docs/minio/linux/reference/minio-mc.html"
+            );
+            return Ok(());
+        }
+    };
+
+    println!("\nProposed fix: install mc");
+    println!("Command: {desc}");
+
+    match inquire::Confirm::new("Install mc now?")
+        .with_default(false)
+        .prompt()
+    {
+        Ok(true) => {}
+        _ => return Ok(()),
+    }
+
+    match method {
+        McInstallMethod::Curl { url, install_path } => {
+            run_curl_install(&url, &install_path)?;
+            let ok = process::Command::new(&install_path)
+                .arg("--version")
+                .stdout(process::Stdio::null())
+                .stderr(process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                println!("\nInstalled successfully to {install_path}.");
+                println!(
+                    "Ensure {install_path} is on your $PATH (add to ~/.bashrc or ~/.zshrc if needed)."
+                );
+            } else {
+                println!("\nInstalled to {install_path} but binary did not execute — check permissions.");
+            }
+        }
+        McInstallMethod::Brew => {
+            let status = process::Command::new("brew")
+                .args(["install", "minio/stable/mc"])
+                .status()
+                .map_err(|e| format!("failed to run brew: {e}"))?;
+            if !status.success() {
+                return Err(format!("brew install failed with status {status}"));
+            }
+            println!("\nRe-checking...");
+            print_result(&check_s3_sync_tool());
+        }
+        McInstallMethod::Unsupported => unreachable!(),
+    }
+    Ok(())
+}
+
 pub(crate) fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let deadline = std::time::Instant::now() + timeout;
@@ -377,7 +488,7 @@ pub fn check_fuse() -> CheckResult {
     }
 }
 
-pub fn run_doctor(config_path: &str, secrets_path: &str, _fix: bool) -> i32 {
+pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
     let mut results: Vec<CheckResult> = Vec::new();
     let mut required_failures = 0u32;
     let mut warnings = 0u32;
@@ -409,6 +520,8 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, _fix: bool) -> i32 {
         results.push(pw);
     }
 
+    let mut s3_tool_failed = false;
+
     // Check S3/rustfs sync tool if any remote needs it
     if let Ok(content) = fs::read_to_string(config_path) {
         if let Ok(backup_config) = knuffel::parse::<BackupConfig>(config_path, &content) {
@@ -420,6 +533,7 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, _fix: bool) -> i32 {
                 let s3_tool = check_s3_sync_tool();
                 if matches!(s3_tool.status, CheckStatus::Fail) {
                     required_failures += 1;
+                    s3_tool_failed = true;
                 }
                 results.push(s3_tool);
             }
@@ -453,6 +567,16 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, _fix: bool) -> i32 {
         (0, w) => println!("{w} warning(s). Run `vivo doctor` again after resolving."),
         (f, 0) => println!("{f} required check(s) failed. Fix the issues above and re-run `vivo doctor`."),
         (f, w) => println!("{f} required check(s) failed, {w} warning(s). Fix required checks first."),
+    }
+
+    if fix {
+        if s3_tool_failed {
+            if let Err(e) = fix_s3_sync_tool() {
+                eprintln!("error: {e}");
+            }
+        }
+    } else if s3_tool_failed {
+        println!("Tip: run 'vivo doctor --fix' to auto-install missing tools.");
     }
 
     if required_failures > 0 { 1 } else { 0 }
@@ -572,6 +696,17 @@ tasks {{
 
     #[test]
     fn run_doctor_accepts_fix_parameter() {
+        run_doctor("/tmp/__vivo_no_config__.kdl", "/tmp/__vivo_no_secrets__.yaml", false);
+    }
+
+    #[test]
+    fn detect_mc_install_method_does_not_panic() {
+        // Confirms the function runs without panicking on the current platform
+        let _ = detect_mc_install_method();
+    }
+
+    #[test]
+    fn run_doctor_with_fix_false_does_not_panic() {
         run_doctor("/tmp/__vivo_no_config__.kdl", "/tmp/__vivo_no_secrets__.yaml", false);
     }
 }
