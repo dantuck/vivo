@@ -1,7 +1,9 @@
 mod b2;
+mod rustfs;
 mod s3;
 
 pub use b2::B2Backend;
+pub use rustfs::RustfsBackend;
 pub use s3::S3Backend;
 
 use std::collections::HashMap;
@@ -43,8 +45,7 @@ pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
     } else if url.starts_with("s3:") {
         Ok(Box::new(S3Backend::from_url(url)?))
     } else if url.starts_with("rustfs:") {
-        let s3_url = url.replacen("rustfs:", "s3:", 1);
-        Ok(Box::new(S3Backend::from_url(&s3_url)?))
+        Ok(Box::new(RustfsBackend::from_url(url)?))
     } else {
         Err(format!(
             "unsupported remote URL '{url}'. supported prefixes: b2:, s3:, rustfs:"
@@ -77,7 +78,7 @@ mod tests {
     #[test]
     fn routes_rustfs_prefix() {
         let b = from_url("rustfs:http://nas:9000/backup").unwrap();
-        assert_eq!(b.name(), "s3");
+        assert_eq!(b.name(), "rustfs");
     }
 
     #[test]
