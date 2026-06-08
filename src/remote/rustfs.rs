@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 use super::RemoteBackend;
 
@@ -6,6 +8,44 @@ pub struct RustfsBackend {
     pub(super) endpoint: String,
     pub(super) bucket: String,
     pub(super) subpath: String,
+}
+
+enum SyncTool {
+    Mc,
+    Aws,
+    Rclone,
+}
+
+fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> {
+    if Command::new("mc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok((SyncTool::Mc, None));
+    }
+    if Command::new("aws")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok((SyncTool::Aws, Some("mc not found — using aws (install mc from https://min.io/docs/minio/linux/reference/minio-mc.html for best rustfs compatibility)")));
+    }
+    if Command::new("rclone")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok((SyncTool::Rclone, Some("mc not found — using rclone (install mc from https://min.io/docs/minio/linux/reference/minio-mc.html for best rustfs compatibility)")));
+    }
+    Err(
+        "no sync tool found — install mc (https://min.io/docs/minio/linux/reference/minio-mc.html), \
+         aws CLI (https://aws.amazon.com/cli/), or rclone (https://rclone.org)"
+            .to_string(),
+    )
 }
 
 impl RustfsBackend {
@@ -61,7 +101,7 @@ impl RemoteBackend for RustfsBackend {
     }
 
     fn check_installed(&self) -> Result<(), String> {
-        todo!()
+        detect_tool().map(|_| ())
     }
 
     fn sync(
@@ -121,5 +161,17 @@ mod tests {
     fn name_returns_rustfs() {
         let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
         assert_eq!(b.name(), "rustfs");
+    }
+
+    #[test]
+    fn check_installed_fails_when_no_tools_on_path() {
+        let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", "");
+        let result = b.check_installed();
+        std::env::set_var("PATH", &original_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("mc") && msg.contains("aws") && msg.contains("rclone"));
     }
 }
