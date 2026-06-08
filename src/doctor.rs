@@ -272,22 +272,36 @@ pub fn check_remote_connectivity(
             },
             Some((endpoint, bucket)) => {
                 let dest = format!("s3://{}", bucket);
-                let mut cmd = process::Command::new("aws");
-                cmd.args(["s3", "ls", &dest, "--endpoint-url", &endpoint])
-                    .envs(creds)
-                    .stdout(process::Stdio::null())
-                    .stderr(process::Stdio::null());
-                match run_with_timeout(&mut cmd, timeout) {
-                    Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
-                    Ok(false) => CheckResult {
+
+                // Use whichever tool is available — same priority as sync
+                let aws_available = process::Command::new("aws")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if aws_available {
+                    let mut cmd = process::Command::new("aws");
+                    cmd.args(["s3", "ls", &dest, "--endpoint-url", &endpoint])
+                        .envs(creds)
+                        .stdout(process::Stdio::null())
+                        .stderr(process::Stdio::null());
+                    match run_with_timeout(&mut cmd, timeout) {
+                        Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
+                        Ok(false) => CheckResult {
+                            label,
+                            status: CheckStatus::Warn,
+                            detail: Some("connection timed out or failed — check rustfs credentials and endpoint".to_string()),
+                        },
+                        Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
+                    }
+                } else {
+                    // aws not available — skip connectivity check rather than fail misleadingly
+                    CheckResult {
                         label,
                         status: CheckStatus::Warn,
-                        detail: Some(
-                            "connection timed out or failed — check rustfs credentials and endpoint"
-                                .to_string(),
-                        ),
-                    },
-                    Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
+                        detail: Some("connectivity check requires aws CLI — install mc or aws to verify".to_string()),
+                    }
                 }
             }
         }
@@ -401,7 +415,7 @@ pub fn run_doctor(config_path: &str, secrets_path: &str) -> i32 {
             let needs_s3_tool = backup_config
                 .all_remotes()
                 .iter()
-                .any(|(url, _)| url.starts_with("s3:") || url.starts_with("rustfs:"));
+                .any(|(url, _)| url.starts_with("rustfs:"));
             if needs_s3_tool {
                 let s3_tool = check_s3_sync_tool();
                 if matches!(s3_tool.status, CheckStatus::Fail) {

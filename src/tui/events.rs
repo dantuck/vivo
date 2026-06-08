@@ -296,8 +296,7 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
         .ok_or("no task selected")?;
 
     let url = ask!(inquire::Text::new("Remote URL (e.g. rustfs:http://nas:9000/bucket):").prompt());
-    if (url.starts_with("s3:") || url.starts_with("rustfs:"))
-        && !crate::remote::s3_sync_tool_installed()
+    if url.starts_with("rustfs:") && !crate::remote::s3_sync_tool_installed()
     {
         eprintln!(
             "[warn] no S3 sync tool found (mc, aws, or rclone) — \

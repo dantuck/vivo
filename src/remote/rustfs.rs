@@ -250,6 +250,8 @@ impl RemoteBackend for RustfsBackend {
             return Ok(());
         }
 
+        super::verify_restic_repo(local_repo)?;
+
         let (tool, warning) = detect_tool()?;
         if let Some(msg) = warning {
             eprintln!("[warn] {msg}");
