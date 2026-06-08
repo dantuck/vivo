@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/dantuck/vivo/compare/v0.10.0...v0.10.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **remote/rustfs:** auto-create bucket before sync if missing ([9c6b7ff](https://github.com/dantuck/vivo/commit/9c6b7ff6d9db1fdd41fc3e8bcca8f645dcc5bca5))
+
 ## [0.10.0](https://github.com/dantuck/vivo/compare/v0.9.0...v0.10.0) (2026-06-08)
 
 
