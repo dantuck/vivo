@@ -296,6 +296,15 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
         .ok_or("no task selected")?;
 
     let url = ask!(inquire::Text::new("Remote URL (e.g. rustfs:http://nas:9000/bucket):").prompt());
+    if (url.starts_with("s3:") || url.starts_with("rustfs:"))
+        && !crate::remote::s3_sync_tool_installed()
+    {
+        eprintln!(
+            "[warn] no S3 sync tool found (mc, aws, or rclone) — \
+             sync to this remote will fail until one is installed. \
+             Install mc: https://min.io/docs/minio/linux/reference/minio-mc.html"
+        );
+    }
     let secrets_path = crate::config::secrets_path_from();
     let credentials = match credentials::select_or_create_profile(&url, &secrets_path)? {
         Some(p) => p,
