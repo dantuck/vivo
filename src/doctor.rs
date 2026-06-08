@@ -251,6 +251,46 @@ pub fn check_remote_connectivity(
             },
             Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
         }
+    } else if url.starts_with("rustfs:") {
+        let parsed = (|| -> Option<(String, String)> {
+            let rest = url.strip_prefix("rustfs:")?;
+            let scheme_end = rest.find("://")? + 3;
+            let host_and_path = &rest[scheme_end..];
+            let slash = host_and_path.find('/')?;
+            let endpoint = rest[..scheme_end + slash].to_string();
+            let bucket_path = &host_and_path[slash + 1..];
+            if bucket_path.is_empty() { return None; }
+            let bucket = bucket_path.split('/').next()?.to_string();
+            Some((endpoint, bucket))
+        })();
+
+        match parsed {
+            None => CheckResult {
+                label,
+                status: CheckStatus::Warn,
+                detail: Some("could not parse endpoint/bucket from rustfs URL".to_string()),
+            },
+            Some((endpoint, bucket)) => {
+                let dest = format!("s3://{}", bucket);
+                let mut cmd = process::Command::new("aws");
+                cmd.args(["s3", "ls", &dest, "--endpoint-url", &endpoint])
+                    .envs(creds)
+                    .stdout(process::Stdio::null())
+                    .stderr(process::Stdio::null());
+                match run_with_timeout(&mut cmd, timeout) {
+                    Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
+                    Ok(false) => CheckResult {
+                        label,
+                        status: CheckStatus::Warn,
+                        detail: Some(
+                            "connection timed out or failed — check rustfs credentials and endpoint"
+                                .to_string(),
+                        ),
+                    },
+                    Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
+                }
+            }
+        }
     } else {
         CheckResult {
             label,
@@ -501,5 +541,18 @@ tasks {{
         std::env::set_var("PATH", &original);
         assert!(matches!(r.status, CheckStatus::Fail));
         assert!(r.detail.as_deref().unwrap_or("").contains("mc"));
+    }
+
+    #[test]
+    fn check_remote_connectivity_rustfs_does_not_return_unsupported() {
+        let mut creds: HashMap<String, HashMap<String, String>> = HashMap::new();
+        creds.insert("myprofile".to_string(), HashMap::new());
+        let r = check_remote_connectivity(
+            "rustfs:https://nonexistent.example.com/bucket",
+            "myprofile",
+            &creds,
+            "password",
+        );
+        assert!(!r.detail.as_deref().unwrap_or("").contains("unsupported"));
     }
 }
