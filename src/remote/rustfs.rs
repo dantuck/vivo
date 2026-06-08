@@ -48,7 +48,7 @@ pub(super) fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> 
     )
 }
 
-fn percent_encode_credential(s: &str) -> String {
+pub(crate) fn percent_encode_credential(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

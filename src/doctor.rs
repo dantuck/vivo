@@ -228,7 +228,7 @@ fn run_curl_install(url: &str, install_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn fix_s3_sync_tool() -> Result<(), String> {
+pub fn fix_s3_sync_tool() -> Result<bool, String> {
     let method = detect_mc_install_method();
 
     let desc = match &method {
@@ -245,7 +245,7 @@ pub fn fix_s3_sync_tool() -> Result<(), String> {
             println!(
                 "Install mc manually: https://min.io/docs/minio/linux/reference/minio-mc.html"
             );
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -257,7 +257,7 @@ pub fn fix_s3_sync_tool() -> Result<(), String> {
         .prompt()
     {
         Ok(true) => {}
-        _ => return Ok(()),
+        _ => return Ok(false),
     }
 
     match method {
@@ -287,12 +287,10 @@ pub fn fix_s3_sync_tool() -> Result<(), String> {
             if !status.success() {
                 return Err(format!("brew install failed with status {status}"));
             }
-            println!("\nRe-checking...");
-            print_result(&check_s3_sync_tool());
         }
         McInstallMethod::Unsupported => unreachable!(),
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
@@ -382,16 +380,45 @@ pub fn check_remote_connectivity(
                 detail: Some("could not parse endpoint/bucket from rustfs URL".to_string()),
             },
             Some((endpoint, bucket)) => {
-                let dest = format!("s3://{}", bucket);
-
-                // Use whichever tool is available — same priority as sync
-                let aws_available = process::Command::new("aws")
+                let mc_available = process::Command::new("mc")
                     .arg("--version")
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
 
-                if aws_available {
+                let aws_available = !mc_available && process::Command::new("aws")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if mc_available {
+                    let key = creds.get("AWS_ACCESS_KEY_ID").map(|s| s.as_str()).unwrap_or("");
+                    let secret = creds.get("AWS_SECRET_ACCESS_KEY").map(|s| s.as_str()).unwrap_or("");
+                    let scheme_end = endpoint.find("://").map(|i| i + 3).unwrap_or(0);
+                    let mc_host = format!(
+                        "{}{}:{}@{}",
+                        &endpoint[..scheme_end],
+                        crate::remote::percent_encode_credential(key),
+                        crate::remote::percent_encode_credential(secret),
+                        &endpoint[scheme_end..],
+                    );
+                    let mut cmd = process::Command::new("mc");
+                    cmd.args(["ls", &format!("vivo-check/{bucket}")])
+                        .env("MC_HOST_vivo-check", &mc_host)
+                        .stdout(process::Stdio::null())
+                        .stderr(process::Stdio::null());
+                    match run_with_timeout(&mut cmd, timeout) {
+                        Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
+                        Ok(false) => CheckResult {
+                            label,
+                            status: CheckStatus::Warn,
+                            detail: Some("connection timed out or failed — check rustfs credentials and endpoint".to_string()),
+                        },
+                        Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
+                    }
+                } else if aws_available {
+                    let dest = format!("s3://{bucket}");
                     let mut cmd = process::Command::new("aws");
                     cmd.args(["s3", "ls", &dest, "--endpoint-url", &endpoint])
                         .envs(creds)
@@ -407,11 +434,10 @@ pub fn check_remote_connectivity(
                         Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
                     }
                 } else {
-                    // aws not available — skip connectivity check rather than fail misleadingly
                     CheckResult {
                         label,
                         status: CheckStatus::Warn,
-                        detail: Some("connectivity check requires aws CLI — install mc or aws to verify".to_string()),
+                        detail: Some("connectivity check requires mc or aws CLI — install mc for best rustfs compatibility".to_string()),
                     }
                 }
             }
@@ -571,8 +597,13 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
 
     if fix {
         if s3_tool_failed {
-            if let Err(e) = fix_s3_sync_tool() {
-                eprintln!("error: {e}");
+            match fix_s3_sync_tool() {
+                Ok(true) => {
+                    println!();
+                    return run_doctor(config_path, secrets_path, false);
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("error: {e}"),
             }
         }
     } else if s3_tool_failed {
