@@ -10,13 +10,13 @@ pub struct RustfsBackend {
     pub(super) subpath: String,
 }
 
-enum SyncTool {
+pub(super) enum SyncTool {
     Mc,
     Aws,
     Rclone,
 }
 
-fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> {
+pub(super) fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> {
     if Command::new("mc")
         .arg("--version")
         .output()
@@ -58,22 +58,17 @@ impl RustfsBackend {
         let inner = &url["rustfs:".len()..];
 
         // Require a scheme with "://"
-        let after_scheme = inner
+        let scheme_sep = inner
             .find("://")
-            .map(|i| &inner[i + 3..])
             .ok_or_else(|| format!("rustfs URL missing scheme (expected https:// or http://): '{url}'"))?;
-
-        // Reconstruct the scheme prefix so we can build the endpoint
-        let scheme_end = inner.find("://").unwrap() + 3;
-        let scheme = &inner[..scheme_end]; // e.g. "https://"
+        let after_scheme = &inner[scheme_sep + 3..];
 
         // Find the first '/' after the host (which separates host from path)
         let slash_pos = after_scheme
             .find('/')
             .ok_or_else(|| format!("rustfs URL missing bucket (no path after host): '{url}'"))?;
 
-        let host = &after_scheme[..slash_pos];
-        let endpoint = format!("{scheme}{host}");
+        let endpoint = inner[..scheme_sep + 3 + slash_pos].to_string();
 
         // Everything after the slash is the path: "bucket" or "bucket/subpath"
         let path = &after_scheme[slash_pos + 1..];
