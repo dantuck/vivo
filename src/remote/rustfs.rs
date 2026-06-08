@@ -5,8 +5,8 @@ use std::process::{Command, Stdio};
 use super::RemoteBackend;
 
 pub struct RustfsBackend {
-    pub(super) endpoint: String,
-    pub(super) bucket: String,
+    pub(crate) endpoint: String,
+    pub(crate) bucket: String,
     pub(super) subpath: String,
 }
 
