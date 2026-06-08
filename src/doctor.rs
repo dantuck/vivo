@@ -152,6 +152,38 @@ pub fn check_restic_password(secrets: &Secrets) -> CheckResult {
     }
 }
 
+pub fn check_s3_sync_tool() -> CheckResult {
+    if let Some(v) = tool_version("mc", "--version") {
+        CheckResult {
+            label: format!("mc ({v})"),
+            status: CheckStatus::Ok,
+            detail: None,
+        }
+    } else if let Some(v) = tool_version("aws", "--version") {
+        CheckResult {
+            label: format!("aws ({v})"),
+            status: CheckStatus::Ok,
+            detail: Some("mc not found — aws will be used (install mc for best rustfs compatibility)".to_string()),
+        }
+    } else if let Some(v) = tool_version("rclone", "version") {
+        CheckResult {
+            label: format!("rclone ({v})"),
+            status: CheckStatus::Ok,
+            detail: Some("mc not found — rclone will be used (install mc for best rustfs compatibility)".to_string()),
+        }
+    } else {
+        CheckResult {
+            label: "mc, aws, or rclone".to_string(),
+            status: CheckStatus::Fail,
+            detail: Some(
+                "required for S3/rustfs sync — install mc (https://min.io/docs/minio/linux/reference/minio-mc.html), \
+                 aws CLI (https://aws.amazon.com/cli/), or rclone (https://rclone.org)"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 pub(crate) fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let deadline = std::time::Instant::now() + timeout;
@@ -323,6 +355,23 @@ pub fn run_doctor(config_path: &str, secrets_path: &str) -> i32 {
         results.push(pw);
     }
 
+    // Check S3/rustfs sync tool if any remote needs it
+    if let Ok(content) = fs::read_to_string(config_path) {
+        if let Ok(backup_config) = knuffel::parse::<BackupConfig>(config_path, &content) {
+            let needs_s3_tool = backup_config
+                .all_remotes()
+                .iter()
+                .any(|(url, _)| url.starts_with("s3:") || url.starts_with("rustfs:"));
+            if needs_s3_tool {
+                let s3_tool = check_s3_sync_tool();
+                if matches!(s3_tool.status, CheckStatus::Fail) {
+                    required_failures += 1;
+                }
+                results.push(s3_tool);
+            }
+        }
+    }
+
     if let (Ok(content), Some(ref secrets)) = (fs::read_to_string(config_path), maybe_secrets) {
         if let Ok(backup_config) = knuffel::parse::<BackupConfig>(config_path, &content) {
             for (url, creds_name) in backup_config.all_remotes() {
@@ -442,5 +491,15 @@ tasks {{
     fn check_fuse_returns_a_result() {
         // Should not panic regardless of platform
         let _ = check_fuse();
+    }
+
+    #[test]
+    fn check_s3_sync_tool_fails_when_no_tools() {
+        let original = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", "");
+        let r = check_s3_sync_tool();
+        std::env::set_var("PATH", &original);
+        assert!(matches!(r.status, CheckStatus::Fail));
+        assert!(r.detail.as_deref().unwrap_or("").contains("mc"));
     }
 }
