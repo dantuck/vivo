@@ -1,0 +1,29 @@
+version: "3"
+
+tasks:
+  remove-bucket:
+    desc: Remove a rustfs/S3 bucket using credentials from vivo secrets
+    summary: |
+      Removes a bucket from a rustfs or S3 endpoint using credentials
+      stored in your vivo secrets file.
+
+      Usage:
+        task remove-bucket URL=https://rustfs.host/bucket PROFILE=myprofile
+    vars:
+      SECRETS_PATH:
+        sh: echo "${VIVO_BACKUP_SECRETS:-$HOME/.config/vivo/secrets.yaml}"
+    requires:
+      vars: [URL, PROFILE]
+    cmds:
+      - |
+        scheme="${URL%%://*}"
+        rest="${URL#*://}"
+        host="${rest%%/*}"
+        bucket="${rest#*/}"
+        creds=$(sops -d "{{.SECRETS_PATH}}" | yq ".credentials.{{.PROFILE}} | .AWS_ACCESS_KEY_ID + \":\" + .AWS_SECRET_ACCESS_KEY")
+        if [ -z "$creds" ]; then
+          echo "error: no credentials found for profile '{{.PROFILE}}'" >&2
+          exit 1
+        fi
+        printf "Removing %s://%s/%s ...\n" "$scheme" "$host" "$bucket"
+        env "MC_HOST_vivo-remove=$scheme://$creds@$host" mc rb "vivo-remove/$bucket" --force
