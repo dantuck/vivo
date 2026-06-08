@@ -16,6 +16,10 @@ pub(super) enum SyncTool {
     Rclone,
 }
 
+pub(super) fn is_bucket_already_exists_error(stderr: &str) -> bool {
+    stderr.contains("BucketAlreadyOwnedByYou") || stderr.contains("BucketAlreadyExists")
+}
+
 pub(super) fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> {
     if Command::new("mc")
         .arg("--version")
@@ -92,6 +96,35 @@ impl RustfsBackend {
         }
     }
 
+    fn ensure_bucket_mc(&self, mc_env: &HashMap<String, String>) -> Result<(), String> {
+        let dest = format!("vivo-sync/{}", self.bucket);
+        self.run_sync_command("mc", &["mb", "--ignore-existing", &dest], mc_env)
+    }
+
+    fn ensure_bucket_aws(&self, env: &HashMap<String, String>) -> Result<(), String> {
+        let output = Command::new("aws")
+            .args(["s3", "mb", &format!("s3://{}", self.bucket), "--endpoint-url", &self.endpoint])
+            .envs(env)
+            .output()
+            .map_err(|e| format!("failed to run aws s3 mb: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !is_bucket_already_exists_error(&stderr) {
+                return Err(format!("aws s3 mb failed for bucket '{}': {stderr}", self.bucket));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_bucket_rclone(&self, rclone_env: &HashMap<String, String>) -> Result<(), String> {
+        let dest = format!(":s3:{}", self.bucket);
+        self.run_sync_command(
+            "rclone",
+            &["mkdir", &dest, "--s3-provider", "Other", "--s3-endpoint", &self.endpoint],
+            rclone_env,
+        )
+    }
+
     fn run_sync_command(
         &self,
         cmd_name: &str,
@@ -134,21 +167,14 @@ impl RustfsBackend {
 
         // Build MC_HOST_vivo-sync URL — credentials percent-encoded to avoid argv exposure
         // and handle special chars in base64-like secret keys
-        let mc_host = format!(
-            "{}://{}:{}@{}",
-            self.endpoint.split("://").next().unwrap_or("https"),
-            percent_encode_credential(key),
-            percent_encode_credential(secret),
-            self.endpoint
-                .split_once("://")
-                .map(|(_, rest)| rest)
-                .unwrap_or(&self.endpoint),
-        );
+        let (scheme, host) = self.endpoint.split_once("://").unwrap_or(("https", &self.endpoint));
+        let mc_host = format!("{}://{}:{}@{}", scheme, percent_encode_credential(key), percent_encode_credential(secret), host);
 
         let dest = self.mc_dest();
         let mut mc_env = HashMap::new();
         mc_env.insert("MC_HOST_vivo-sync".to_string(), mc_host);
 
+        self.ensure_bucket_mc(&mc_env)?;
         self.run_sync_command(
             "mc",
             &["mirror", "--remove", "--overwrite", local_repo, &dest],
@@ -157,6 +183,7 @@ impl RustfsBackend {
     }
 
     fn sync_aws(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        self.ensure_bucket_aws(env)?;
         let dest = self.s3_dest();
         self.run_sync_command(
             "aws",
@@ -174,6 +201,7 @@ impl RustfsBackend {
         rclone_env.insert("RCLONE_S3_ACCESS_KEY_ID".to_string(), key);
         rclone_env.insert("RCLONE_S3_SECRET_ACCESS_KEY".to_string(), secret);
 
+        self.ensure_bucket_rclone(&rclone_env)?;
         self.run_sync_command(
             "rclone",
             &[
@@ -319,6 +347,26 @@ mod tests {
         let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
         let result = b.sync("/tmp/repo", true, &HashMap::new());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn is_bucket_already_exists_tolerates_owned_by_you() {
+        assert!(is_bucket_already_exists_error("BucketAlreadyOwnedByYou"));
+    }
+
+    #[test]
+    fn is_bucket_already_exists_tolerates_already_exists() {
+        assert!(is_bucket_already_exists_error("make_bucket_failed: BucketAlreadyExists"));
+    }
+
+    #[test]
+    fn is_bucket_already_exists_rejects_other_errors() {
+        assert!(!is_bucket_already_exists_error("AccessDenied: permission denied"));
+    }
+
+    #[test]
+    fn is_bucket_already_exists_rejects_empty() {
+        assert!(!is_bucket_already_exists_error(""));
     }
 
     #[test]
