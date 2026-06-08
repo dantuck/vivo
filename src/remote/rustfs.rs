@@ -48,6 +48,25 @@ pub(super) fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> 
     )
 }
 
+fn percent_encode_credential(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '+' => out.push_str("%2B"),
+            '/' => out.push_str("%2F"),
+            '=' => out.push_str("%3D"),
+            ':' => out.push_str("%3A"),
+            '@' => out.push_str("%40"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            '&' => out.push_str("%26"),
+            '%' => out.push_str("%25"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 impl RustfsBackend {
     fn s3_dest(&self) -> String {
         if self.subpath.is_empty() {
@@ -113,18 +132,28 @@ impl RustfsBackend {
         let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
         let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
 
-        // Set alias (idempotent)
-        let alias_status = Command::new("mc")
-            .args(["alias", "set", "vivo-sync", &self.endpoint, key, secret])
-            .output()
-            .map_err(|e| format!("failed to run mc alias set: {e}"))?;
-        if !alias_status.status.success() {
-            let stderr = String::from_utf8_lossy(&alias_status.stderr);
-            return Err(format!("mc alias set failed: {stderr}"));
-        }
+        // Build MC_HOST_vivo-sync URL — credentials percent-encoded to avoid argv exposure
+        // and handle special chars in base64-like secret keys
+        let mc_host = format!(
+            "{}://{}:{}@{}",
+            self.endpoint.split("://").next().unwrap_or("https"),
+            percent_encode_credential(key),
+            percent_encode_credential(secret),
+            self.endpoint
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or(&self.endpoint),
+        );
 
         let dest = self.mc_dest();
-        self.run_sync_command("mc", &["mirror", "--remove", "--overwrite", local_repo, &dest], &HashMap::new())
+        let mut mc_env = HashMap::new();
+        mc_env.insert("MC_HOST_vivo-sync".to_string(), mc_host);
+
+        self.run_sync_command(
+            "mc",
+            &["mirror", "--remove", "--overwrite", local_repo, &dest],
+            &mc_env,
+        )
     }
 
     fn sync_aws(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
@@ -138,8 +167,13 @@ impl RustfsBackend {
 
     fn sync_rclone(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
         let dest = self.rclone_dest();
-        let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
-        let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
+        let key = env.get("AWS_ACCESS_KEY_ID").cloned().unwrap_or_default();
+        let secret = env.get("AWS_SECRET_ACCESS_KEY").cloned().unwrap_or_default();
+
+        let mut rclone_env = HashMap::new();
+        rclone_env.insert("RCLONE_S3_ACCESS_KEY_ID".to_string(), key);
+        rclone_env.insert("RCLONE_S3_SECRET_ACCESS_KEY".to_string(), secret);
+
         self.run_sync_command(
             "rclone",
             &[
@@ -147,10 +181,8 @@ impl RustfsBackend {
                 local_repo, &dest,
                 "--s3-provider", "Other",
                 "--s3-endpoint", &self.endpoint,
-                "--s3-access-key-id", key,
-                "--s3-secret-access-key", secret,
             ],
-            &HashMap::new(),
+            &rclone_env,
         )
     }
 
