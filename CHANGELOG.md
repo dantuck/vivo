@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.10.0](https://github.com/dantuck/vivo/compare/v0.9.0...v0.10.0) (2026-06-08)
+
+
+### Features
+
+* **doctor:** add --fix flag, update run_doctor signature ([5f660eb](https://github.com/dantuck/vivo/commit/5f660ebcd1c32d920666e5ea5950078a3423f94a))
+* **doctor:** add fix_s3_sync_tool() with mc install and plain-doctor hint ([b2b681a](https://github.com/dantuck/vivo/commit/b2b681a54b7a9dafb9e3441594cce96627766308))
+* **doctor:** add rustfs connectivity check via aws s3 ls ([f5c2a8e](https://github.com/dantuck/vivo/commit/f5c2a8ec9938aa13c09586e993bd214420acdba5))
+* **doctor:** check mc/aws/rclone tool for s3/rustfs remotes ([ab2a514](https://github.com/dantuck/vivo/commit/ab2a514308e208fa2099da6497f54099c32cd91f))
+* **remote:** add RustfsBackend with URL parsing ([41f88ce](https://github.com/dantuck/vivo/commit/41f88ce25225bafa32cf26197b30ec0bd4c55283))
+* **remote:** add tool detection (mc/aws/rclone) to RustfsBackend ([dd90e56](https://github.com/dantuck/vivo/commit/dd90e565d0131388e153dbd977d5c66ee5b5b7fd))
+* **remote:** implement RustfsBackend sync via mc/aws/rclone ([d45ba87](https://github.com/dantuck/vivo/commit/d45ba8709e62d791d64657a569314a3983627c47))
+* **tui:** warn when adding s3/rustfs remote without mc/aws/rclone installed ([11de248](https://github.com/dantuck/vivo/commit/11de24837925ffdbae556fa868d9d62b9252e94d))
+
+
+### Bug Fixes
+
+* **doctor:** re-run full doctor after fix, use mc for rustfs connectivity check ([d5b3e79](https://github.com/dantuck/vivo/commit/d5b3e79b3d34506e52266998dfa243b167c5da4a))
+* **remote:** pass credentials via env vars to avoid argv exposure in mc/rclone ([68d9f17](https://github.com/dantuck/vivo/commit/68d9f177aedc7103eabd291c6b49fa27e7668213))
+* **remote:** stream S3Backend sync output to terminal ([950344e](https://github.com/dantuck/vivo/commit/950344e124e1ce6392041bf5a00bd9cb51de46ef))
+* **remote:** verify repo before destructive sync, scope s3-tool check to rustfs only, make connectivity check tool-aware ([b8cf14e](https://github.com/dantuck/vivo/commit/b8cf14eccde89335cb6d487149e69bbe3ded8626))
+
 ## [0.9.0](https://github.com/dantuck/vivo/compare/v0.8.0...v0.9.0) (2026-06-06)
 
 
