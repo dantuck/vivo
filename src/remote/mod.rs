@@ -4,6 +4,7 @@ mod s3;
 
 pub use b2::B2Backend;
 pub use rustfs::RustfsBackend;
+pub(crate) use rustfs::percent_encode_credential;
 pub use s3::S3Backend;
 
 use std::collections::HashMap;
