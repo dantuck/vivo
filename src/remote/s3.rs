@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 use super::RemoteBackend;
 
@@ -44,15 +45,30 @@ impl RemoteBackend for S3Backend {
         }
 
         let restic_password = std::env::var("RESTIC_PASSWORD").unwrap_or_default();
-        let output = Command::new("restic")
+        let mut child = Command::new("restic")
             .args(["-r", &self.url, "copy", "--from-repo", local_repo])
             .envs(env)
             .env("RESTIC_FROM_PASSWORD", restic_password)
-            .output()
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| format!("failed to run restic: {e}"))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_reader = BufReader::new(child.stderr.take().unwrap());
+        let stderr_thread = std::thread::spawn(move || {
+            let mut collected = String::new();
+            for line in stderr_reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                collected.push_str(&line);
+                collected.push('\n');
+            }
+            collected
+        });
+
+        let status = child.wait().map_err(|e| format!("failed to wait for restic: {e}"))?;
+        let stderr = stderr_thread.join().unwrap_or_default();
+
+        if !status.success() {
             if stderr.contains("unable to open config") {
                 return Err(format!(
                     "remote restic repo must be initialized first: restic init --repo {}",
