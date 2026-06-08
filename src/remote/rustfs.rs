@@ -49,6 +49,111 @@ pub(super) fn detect_tool() -> Result<(SyncTool, Option<&'static str>), String> 
 }
 
 impl RustfsBackend {
+    fn s3_dest(&self) -> String {
+        if self.subpath.is_empty() {
+            format!("s3://{}", self.bucket)
+        } else {
+            format!("s3://{}/{}", self.bucket, self.subpath)
+        }
+    }
+
+    fn rclone_dest(&self) -> String {
+        if self.subpath.is_empty() {
+            format!(":s3:{}", self.bucket)
+        } else {
+            format!(":s3:{}/{}", self.bucket, self.subpath)
+        }
+    }
+
+    fn mc_dest(&self) -> String {
+        if self.subpath.is_empty() {
+            format!("vivo-sync/{}", self.bucket)
+        } else {
+            format!("vivo-sync/{}/{}", self.bucket, self.subpath)
+        }
+    }
+
+    fn run_sync_command(
+        &self,
+        cmd_name: &str,
+        args: &[&str],
+        env: &HashMap<String, String>,
+    ) -> Result<(), String> {
+        let mut child = Command::new(cmd_name)
+            .args(args)
+            .envs(env)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to run {cmd_name}: {e}"))?;
+
+        let stderr_reader = BufReader::new(child.stderr.take().unwrap());
+        let stderr_thread = std::thread::spawn(move || {
+            let mut collected = String::new();
+            for line in stderr_reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                collected.push_str(&line);
+                collected.push('\n');
+            }
+            collected
+        });
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("failed to wait for {cmd_name}: {e}"))?;
+        let stderr = stderr_thread.join().unwrap_or_default();
+
+        if !status.success() {
+            return Err(format!("{cmd_name} sync to {} failed: {stderr}", self.endpoint));
+        }
+        Ok(())
+    }
+
+    fn sync_mc(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
+        let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
+
+        // Set alias (idempotent)
+        let alias_status = Command::new("mc")
+            .args(["alias", "set", "vivo-sync", &self.endpoint, key, secret])
+            .output()
+            .map_err(|e| format!("failed to run mc alias set: {e}"))?;
+        if !alias_status.status.success() {
+            let stderr = String::from_utf8_lossy(&alias_status.stderr);
+            return Err(format!("mc alias set failed: {stderr}"));
+        }
+
+        let dest = self.mc_dest();
+        self.run_sync_command("mc", &["mirror", "--remove", "--overwrite", local_repo, &dest], &HashMap::new())
+    }
+
+    fn sync_aws(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        let dest = self.s3_dest();
+        self.run_sync_command(
+            "aws",
+            &["s3", "sync", "--delete", "--size-only", local_repo, &dest, "--endpoint-url", &self.endpoint],
+            env,
+        )
+    }
+
+    fn sync_rclone(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        let dest = self.rclone_dest();
+        let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
+        let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
+        self.run_sync_command(
+            "rclone",
+            &[
+                "sync", "--delete-during", "--size-only",
+                local_repo, &dest,
+                "--s3-provider", "Other",
+                "--s3-endpoint", &self.endpoint,
+                "--s3-access-key-id", key,
+                "--s3-secret-access-key", secret,
+            ],
+            &HashMap::new(),
+        )
+    }
+
     pub fn from_url(url: &str) -> Result<Self, String> {
         if !url.starts_with("rustfs:") {
             return Err(format!("not a rustfs URL: '{url}'"));
@@ -101,11 +206,28 @@ impl RemoteBackend for RustfsBackend {
 
     fn sync(
         &self,
-        _local_repo: &str,
-        _dry_run: bool,
-        _env: &HashMap<String, String>,
+        local_repo: &str,
+        dry_run: bool,
+        env: &HashMap<String, String>,
     ) -> Result<(), String> {
-        todo!()
+        if dry_run {
+            println!(
+                "[dry-run] would sync {} to rustfs:{}/{}",
+                local_repo, self.endpoint, self.bucket
+            );
+            return Ok(());
+        }
+
+        let (tool, warning) = detect_tool()?;
+        if let Some(msg) = warning {
+            eprintln!("[warn] {msg}");
+        }
+
+        match tool {
+            SyncTool::Mc => self.sync_mc(local_repo, env),
+            SyncTool::Aws => self.sync_aws(local_repo, env),
+            SyncTool::Rclone => self.sync_rclone(local_repo, env),
+        }
     }
 }
 
@@ -156,6 +278,13 @@ mod tests {
     fn name_returns_rustfs() {
         let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
         assert_eq!(b.name(), "rustfs");
+    }
+
+    #[test]
+    fn dry_run_returns_ok_without_tools() {
+        let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
+        let result = b.sync("/tmp/repo", true, &HashMap::new());
+        assert!(result.is_ok());
     }
 
     #[test]
