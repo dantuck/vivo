@@ -39,6 +39,19 @@ pub fn verify_restic_repo(local_repo: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns true if mc, aws, or rclone is available for S3/rustfs sync.
+pub fn s3_sync_tool_installed() -> bool {
+    [("mc", "--version"), ("aws", "--version"), ("rclone", "version")]
+        .iter()
+        .any(|(cmd, flag)| {
+            std::process::Command::new(cmd)
+                .arg(flag)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+}
+
 pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
     if url.starts_with("b2:") {
         Ok(Box::new(B2Backend::from_url(url)?))
