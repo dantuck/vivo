@@ -233,8 +233,8 @@ fn cmd_init(config_path: &str, secrets_path: &str) {
     println!("  3. Run a dry-run backup:     vivo --dry-run");
 }
 
-fn cmd_doctor(config_path: &str, secrets_path: &str) {
-    let exit_code = vivo::doctor::run_doctor(config_path, secrets_path);
+fn cmd_doctor(config_path: &str, secrets_path: &str, fix: bool) {
+    let exit_code = vivo::doctor::run_doctor(config_path, secrets_path, fix);
     std::process::exit(exit_code);
 }
 
@@ -602,8 +602,9 @@ fn main() {
             }
             return;
         }
-        Some(("doctor", _)) => {
-            cmd_doctor(&config_path, &secrets_path);
+        Some(("doctor", sub)) => {
+            let fix = sub.get_flag("fix");
+            cmd_doctor(&config_path, &secrets_path, fix);
             return;
         }
         Some(("update", _)) => {

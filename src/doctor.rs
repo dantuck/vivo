@@ -377,7 +377,7 @@ pub fn check_fuse() -> CheckResult {
     }
 }
 
-pub fn run_doctor(config_path: &str, secrets_path: &str) -> i32 {
+pub fn run_doctor(config_path: &str, secrets_path: &str, _fix: bool) -> i32 {
     let mut results: Vec<CheckResult> = Vec::new();
     let mut required_failures = 0u32;
     let mut warnings = 0u32;
@@ -568,5 +568,10 @@ tasks {{
             "password",
         );
         assert!(!r.detail.as_deref().unwrap_or("").contains("unsupported"));
+    }
+
+    #[test]
+    fn run_doctor_accepts_fix_parameter() {
+        run_doctor("/tmp/__vivo_no_config__.kdl", "/tmp/__vivo_no_secrets__.yaml", false);
     }
 }
