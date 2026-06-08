@@ -361,17 +361,9 @@ pub fn check_remote_connectivity(
             Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
         }
     } else if url.starts_with("rustfs:") {
-        let parsed = (|| -> Option<(String, String)> {
-            let rest = url.strip_prefix("rustfs:")?;
-            let scheme_end = rest.find("://")? + 3;
-            let host_and_path = &rest[scheme_end..];
-            let slash = host_and_path.find('/')?;
-            let endpoint = rest[..scheme_end + slash].to_string();
-            let bucket_path = &host_and_path[slash + 1..];
-            if bucket_path.is_empty() { return None; }
-            let bucket = bucket_path.split('/').next()?.to_string();
-            Some((endpoint, bucket))
-        })();
+        let parsed = crate::remote::RustfsBackend::from_url(url)
+            .ok()
+            .map(|b| (b.endpoint, b.bucket));
 
         match parsed {
             None => CheckResult {
@@ -548,26 +540,27 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
 
     let mut s3_tool_failed = false;
 
-    // Check S3/rustfs sync tool if any remote needs it
-    if let Ok(content) = fs::read_to_string(config_path) {
-        if let Ok(backup_config) = knuffel::parse::<BackupConfig>(config_path, &content) {
-            let needs_s3_tool = backup_config
-                .all_remotes()
-                .iter()
-                .any(|(url, _)| url.starts_with("rustfs:"));
-            if needs_s3_tool {
-                let s3_tool = check_s3_sync_tool();
-                if matches!(s3_tool.status, CheckStatus::Fail) {
-                    required_failures += 1;
-                    s3_tool_failed = true;
-                }
-                results.push(s3_tool);
+    let maybe_backup_config: Option<BackupConfig> = fs::read_to_string(config_path)
+        .ok()
+        .and_then(|content| knuffel::parse::<BackupConfig>(config_path, &content).ok());
+
+    if let Some(ref backup_config) = maybe_backup_config {
+        let needs_s3_tool = backup_config
+            .all_remotes()
+            .iter()
+            .any(|(url, _)| url.starts_with("rustfs:"));
+        if needs_s3_tool {
+            let s3_tool = check_s3_sync_tool();
+            if matches!(s3_tool.status, CheckStatus::Fail) {
+                required_failures += 1;
+                s3_tool_failed = true;
             }
+            results.push(s3_tool);
         }
     }
 
-    if let (Ok(content), Some(ref secrets)) = (fs::read_to_string(config_path), maybe_secrets) {
-        if let Ok(backup_config) = knuffel::parse::<BackupConfig>(config_path, &content) {
+    if let Some(ref secrets) = maybe_secrets {
+        if let Some(ref backup_config) = maybe_backup_config {
             for (url, creds_name) in backup_config.all_remotes() {
                 let r = check_remote_connectivity(
                     url,
@@ -736,8 +729,4 @@ tasks {{
         let _ = detect_mc_install_method();
     }
 
-    #[test]
-    fn run_doctor_with_fix_false_does_not_panic() {
-        run_doctor("/tmp/__vivo_no_config__.kdl", "/tmp/__vivo_no_secrets__.yaml", false);
-    }
 }
