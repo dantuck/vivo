@@ -59,6 +59,21 @@ pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
     }
 }
 
+pub fn from_remote(remote: &crate::backup_config::backup::Remote) -> Result<Box<dyn RemoteBackend>, String> {
+    let url = &remote.url;
+    if url.starts_with("b2:") {
+        Ok(Box::new(B2Backend::from_url(url)?))
+    } else if url.starts_with("s3:") {
+        Ok(Box::new(S3Backend::from_url(url)?))
+    } else if url.starts_with("rustfs:") {
+        Ok(Box::new(RustfsBackend::from_remote(remote)?))
+    } else {
+        Err(format!(
+            "unsupported remote URL '{url}'. supported prefixes: b2:, s3:, rustfs:"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

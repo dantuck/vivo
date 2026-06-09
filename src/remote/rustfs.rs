@@ -8,6 +8,8 @@ pub struct RustfsBackend {
     pub(crate) endpoint: String,
     pub(crate) bucket: String,
     pub(super) subpath: String,
+    pub(crate) mc_max_workers: Option<u32>,
+    pub(crate) mc_limit_upload: Option<String>,
 }
 
 pub(super) enum SyncTool {
@@ -161,6 +163,19 @@ impl RustfsBackend {
         Ok(())
     }
 
+    fn mc_mirror_args(&self) -> Vec<String> {
+        let mut extra = Vec::new();
+        if let Some(p) = self.mc_max_workers {
+            extra.push("--max-workers".to_string());
+            extra.push(p.to_string());
+        }
+        if let Some(ref limit) = self.mc_limit_upload {
+            extra.push("--limit-upload".to_string());
+            extra.push(limit.clone());
+        }
+        extra
+    }
+
     fn sync_mc(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
         let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
         let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
@@ -175,11 +190,15 @@ impl RustfsBackend {
         mc_env.insert("MC_HOST_vivo-sync".to_string(), mc_host);
 
         self.ensure_bucket_mc(&mc_env)?;
-        self.run_sync_command(
-            "mc",
-            &["mirror", "--remove", "--overwrite", local_repo, &dest],
-            &mc_env,
-        )
+
+        let extra = self.mc_mirror_args();
+        let mut args = vec!["mirror", "--remove", "--overwrite"];
+        let extra_str: Vec<&str> = extra.iter().map(String::as_str).collect();
+        args.extend_from_slice(&extra_str);
+        args.push(local_repo);
+        args.push(&dest);
+
+        self.run_sync_command("mc", &args, &mc_env)
     }
 
     fn sync_aws(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
@@ -251,7 +270,14 @@ impl RustfsBackend {
             return Err(format!("rustfs URL missing bucket (empty bucket): '{url}'"));
         }
 
-        Ok(RustfsBackend { endpoint, bucket, subpath })
+        Ok(RustfsBackend { endpoint, bucket, subpath, mc_max_workers: None, mc_limit_upload: None })
+    }
+
+    pub fn from_remote(remote: &crate::backup_config::backup::Remote) -> Result<Self, String> {
+        let mut backend = Self::from_url(&remote.url)?;
+        backend.mc_max_workers = remote.mc_max_workers;
+        backend.mc_limit_upload = remote.mc_limit_upload.clone();
+        Ok(backend)
     }
 }
 
@@ -379,5 +405,57 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("mc") && msg.contains("aws") && msg.contains("rclone"));
+    }
+
+    #[test]
+    fn mc_mirror_args_empty_when_no_options() {
+        let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
+        assert!(b.mc_mirror_args().is_empty());
+    }
+
+    #[test]
+    fn mc_mirror_args_parallel_only() {
+        let b = RustfsBackend {
+            endpoint: "https://host".to_string(),
+            bucket: "bucket".to_string(),
+            subpath: String::new(),
+            mc_max_workers: Some(4),
+            mc_limit_upload: None,
+        };
+        let args = b.mc_mirror_args();
+        assert_eq!(args, vec!["--max-workers", "4"]);
+    }
+
+    #[test]
+    fn mc_mirror_args_limit_upload_only() {
+        let b = RustfsBackend {
+            endpoint: "https://host".to_string(),
+            bucket: "bucket".to_string(),
+            subpath: String::new(),
+            mc_max_workers: None,
+            mc_limit_upload: Some("5MiB".to_string()),
+        };
+        let args = b.mc_mirror_args();
+        assert_eq!(args, vec!["--limit-upload", "5MiB"]);
+    }
+
+    #[test]
+    fn mc_mirror_args_both_options() {
+        let b = RustfsBackend {
+            endpoint: "https://host".to_string(),
+            bucket: "bucket".to_string(),
+            subpath: String::new(),
+            mc_max_workers: Some(2),
+            mc_limit_upload: Some("10MiB".to_string()),
+        };
+        let args = b.mc_mirror_args();
+        assert_eq!(args, vec!["--max-workers", "2", "--limit-upload", "10MiB"]);
+    }
+
+    #[test]
+    fn from_url_sets_mc_fields_to_none() {
+        let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
+        assert!(b.mc_max_workers.is_none());
+        assert!(b.mc_limit_upload.is_none());
     }
 }

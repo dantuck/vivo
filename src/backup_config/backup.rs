@@ -17,6 +17,10 @@ pub struct Remote {
     pub url: String,
     #[knuffel(child, unwrap(argument))]
     pub credentials: String,
+    #[knuffel(child, unwrap(argument))]
+    pub mc_max_workers: Option<u32>,
+    #[knuffel(child, unwrap(argument))]
+    pub mc_limit_upload: Option<String>,
 }
 
 #[derive(knuffel::Decode, Debug)]
@@ -182,7 +186,7 @@ impl Backup {
             }
             let creds = creds_cache.get(&remote.credentials).unwrap();
 
-            let backend = match crate::remote::from_url(&remote.url) {
+            let backend = match crate::remote::from_remote(remote) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -244,5 +248,77 @@ impl Backup {
             self.sync_remotes(dry_run, credentials);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::backup_config::BackupConfig;
+
+    #[test]
+    fn remote_parses_mc_max_workers() {
+        let src = r#"
+default-task "backup"
+tasks {
+    task "t" {
+        backup {
+            repo "/tmp/repo"
+            remote "rustfs:http://nas/b" {
+                credentials "aws"
+                mc-max-workers 2
+            }
+        }
+    }
+}
+"#;
+        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
+        assert_eq!(remote.mc_max_workers, Some(2));
+        assert_eq!(remote.mc_limit_upload, None);
+    }
+
+    #[test]
+    fn remote_parses_mc_limit_upload() {
+        let src = r#"
+default-task "backup"
+tasks {
+    task "t" {
+        backup {
+            repo "/tmp/repo"
+            remote "rustfs:http://nas/b" {
+                credentials "aws"
+                mc-limit-upload "5MiB"
+            }
+        }
+    }
+}
+"#;
+        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
+        assert_eq!(remote.mc_max_workers, None);
+        assert_eq!(remote.mc_limit_upload.as_deref(), Some("5MiB"));
+    }
+
+    #[test]
+    fn remote_parses_both_mc_options() {
+        let src = r#"
+default-task "backup"
+tasks {
+    task "t" {
+        backup {
+            repo "/tmp/repo"
+            remote "rustfs:http://nas/b" {
+                credentials "aws"
+                mc-max-workers 1
+                mc-limit-upload "10MiB"
+            }
+        }
+    }
+}
+"#;
+        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
+        assert_eq!(remote.mc_max_workers, Some(1));
+        assert_eq!(remote.mc_limit_upload.as_deref(), Some("10MiB"));
     }
 }
