@@ -64,9 +64,20 @@ fn run_call(
 }
 
 impl Task {
+    pub fn backup(&self) -> Option<&Backup> {
+        self.backup.as_ref()
+    }
+
     pub fn backup_remotes(&self) -> Vec<(&str, &str)> {
         match &self.backup {
             Some(b) => b.remotes().iter().map(|r| (r.url.as_str(), r.credentials.as_str())).collect(),
+            None => vec![],
+        }
+    }
+
+    pub fn backup_remote_entries(&self) -> Vec<&crate::backup_config::backup::Remote> {
+        match &self.backup {
+            Some(b) => b.remotes().iter().collect(),
             None => vec![],
         }
     }
