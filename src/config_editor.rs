@@ -10,6 +10,8 @@ pub struct TaskSpec {
 pub struct RemoteSpec {
     pub url: String,
     pub credentials: String,
+    pub mc_max_workers: Option<u32>,
+    pub mc_limit_upload: Option<String>,
 }
 
 pub struct EditTaskSpec {
@@ -43,6 +45,38 @@ fn str_node(name: &str, value: &str) -> KdlNode {
     let mut n = KdlNode::new(name);
     n.push(str_entry(value));
     n
+}
+
+fn int_entry(value: i128) -> KdlEntry {
+    let mut entry = KdlEntry::new(KdlValue::Integer(value));
+    entry.set_format(KdlEntryFormat {
+        leading: " ".to_string(),
+        value_repr: value.to_string(),
+        ..Default::default()
+    });
+    entry
+}
+
+fn int_node(name: &str, value: i128) -> KdlNode {
+    let mut n = KdlNode::new(name);
+    n.push(int_entry(value));
+    n
+}
+
+fn upsert_or_remove_int_child(doc: &mut KdlDocument, name: &str, value: Option<u32>) {
+    if let Some(v) = value {
+        if let Some(node) = doc.nodes_mut().iter_mut().find(|n| n.name().value() == name) {
+            if let Some(entry) = node.entries_mut().iter_mut().find(|e| e.name().is_none()) {
+                *entry = int_entry(v as i128);
+            } else {
+                node.push(int_entry(v as i128));
+            }
+        } else {
+            doc.nodes_mut().push(int_node(name, v as i128));
+        }
+    } else {
+        doc.nodes_mut().retain(|n| n.name().value() != name);
+    }
 }
 
 fn update_str_child(doc: &mut KdlDocument, name: &str, value: &str) {
@@ -305,10 +339,16 @@ pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String
 
     let mut remote = KdlNode::new("remote");
     remote.push(str_entry(&spec.url));
-    remote
-        .ensure_children()
-        .nodes_mut()
-        .push(str_node("credentials", &spec.credentials));
+    {
+        let rc = remote.ensure_children();
+        rc.nodes_mut().push(str_node("credentials", &spec.credentials));
+        if let Some(p) = spec.mc_max_workers {
+            rc.nodes_mut().push(int_node("mc-max-workers", p as i128));
+        }
+        if let Some(ref limit) = spec.mc_limit_upload {
+            rc.nodes_mut().push(str_node("mc-limit-upload", limit));
+        }
+    }
 
     backup_children.nodes_mut().push(remote);
 
@@ -353,9 +393,11 @@ pub fn edit_remote(
         *entry = str_entry(&spec.url);
     }
 
-    // Update credentials child
+    // Update credentials child and mc options
     let remote_children = remote.ensure_children();
     update_str_child(remote_children, "credentials", &spec.credentials);
+    upsert_or_remove_int_child(remote_children, "mc-max-workers", spec.mc_max_workers);
+    upsert_or_remove_child(remote_children, "mc-limit-upload", spec.mc_limit_upload.as_deref());
 
     Ok(doc.to_string())
 }
@@ -640,6 +682,8 @@ tasks {
             RemoteSpec {
                 url: "rustfs:http://nas:9000/bucket".to_string(),
                 credentials: "rustfs".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: None,
             },
         )
         .unwrap();
@@ -667,6 +711,8 @@ tasks {
             RemoteSpec {
                 url: "s3:http://example.com/b".to_string(),
                 credentials: "aws".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: None,
             },
         )
         .unwrap_err();
@@ -678,7 +724,7 @@ tasks {
         let err = add_remote(
             BASE_KDL,
             "nonexistent",
-            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string(), mc_max_workers: None, mc_limit_upload: None },
         )
         .unwrap_err();
         assert!(err.contains("not found"));
@@ -696,10 +742,64 @@ tasks {
         let err = add_remote(
             no_backup,
             "cmd",
-            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string(), mc_max_workers: None, mc_limit_upload: None },
         )
         .unwrap_err();
         assert!(err.contains("backup block"));
+    }
+
+    #[test]
+    fn add_remote_writes_mc_max_workers_child() {
+        let result = add_remote(
+            BASE_KDL,
+            "backup",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: Some(4),
+                mc_limit_upload: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains("mc-max-workers"));
+        assert!(result.contains("4"));
+        assert!(!result.contains("mc-limit-upload"));
+    }
+
+    #[test]
+    fn add_remote_writes_mc_limit_upload_child() {
+        let result = add_remote(
+            BASE_KDL,
+            "backup",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: Some("5MiB".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(result.contains("mc-limit-upload"));
+        assert!(result.contains(r#""5MiB""#));
+        assert!(!result.contains("mc-max-workers"));
+    }
+
+    #[test]
+    fn add_remote_writes_both_mc_fields() {
+        let result = add_remote(
+            BASE_KDL,
+            "backup",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: Some(2),
+                mc_limit_upload: Some("10MiB".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(result.contains("mc-max-workers"));
+        assert!(result.contains("mc-limit-upload"));
+        assert!(result.contains(r#""10MiB""#));
     }
 
     const WITH_CALLS_KDL: &str = r#"default-task "backup"
@@ -946,6 +1046,8 @@ tasks {
             RemoteSpec {
                 url: "rustfs:http://nas:9000/bucket".to_string(),
                 credentials: "local".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: None,
             },
         )
         .unwrap();
@@ -964,6 +1066,8 @@ tasks {
             RemoteSpec {
                 url: "rustfs:http://nas:9000/bucket".to_string(),
                 credentials: "local".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: None,
             },
         )
         .unwrap_err();
@@ -979,6 +1083,8 @@ tasks {
             RemoteSpec {
                 url: "rustfs:http://nas:9000/bucket".to_string(),
                 credentials: "local".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: None,
             },
         )
         .unwrap_err();
@@ -991,7 +1097,7 @@ tasks {
             WITH_REMOTE_KDL,
             "backup",
             "s3:http://example.com/b",
-            RemoteSpec { url: String::new(), credentials: "aws".to_string() },
+            RemoteSpec { url: String::new(), credentials: "aws".to_string(), mc_max_workers: None, mc_limit_upload: None },
         )
         .unwrap_err();
         assert!(err.contains("cannot be empty"));
@@ -1010,10 +1116,97 @@ tasks {
             no_backup,
             "cmd",
             "s3:http://x",
-            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string() },
+            RemoteSpec { url: "s3:http://x".to_string(), credentials: "c".to_string(), mc_max_workers: None, mc_limit_upload: None },
         )
         .unwrap_err();
         assert!(err.contains("backup block"));
+    }
+
+    const WITH_RUSTFS_MC_KDL: &str = r#"default-task "backup"
+tasks {
+    task "backup" {
+        backup {
+            repo "/tmp/repo"
+            remote "rustfs:http://nas:9000/bucket" {
+                credentials "aws"
+                mc-max-workers 2
+                mc-limit-upload "5MiB"
+            }
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn edit_remote_adds_mc_max_workers_when_set() {
+        let result = edit_remote(
+            WITH_REMOTE_KDL,
+            "backup",
+            "s3:http://example.com/b",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: Some(4),
+                mc_limit_upload: None,
+            },
+        )
+        .unwrap();
+        assert!(result.contains("mc-max-workers"));
+        assert!(result.contains("4"));
+    }
+
+    #[test]
+    fn edit_remote_removes_mc_max_workers_when_none() {
+        let result = edit_remote(
+            WITH_RUSTFS_MC_KDL,
+            "backup",
+            "rustfs:http://nas:9000/bucket",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: None,
+                mc_limit_upload: Some("5MiB".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(!result.contains("mc-max-workers"));
+        assert!(result.contains("mc-limit-upload"));
+    }
+
+    #[test]
+    fn edit_remote_removes_mc_limit_upload_when_none() {
+        let result = edit_remote(
+            WITH_RUSTFS_MC_KDL,
+            "backup",
+            "rustfs:http://nas:9000/bucket",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: Some(2),
+                mc_limit_upload: None,
+            },
+        )
+        .unwrap();
+        assert!(!result.contains("mc-limit-upload"));
+        assert!(result.contains("mc-max-workers"));
+    }
+
+    #[test]
+    fn edit_remote_updates_mc_fields() {
+        let result = edit_remote(
+            WITH_RUSTFS_MC_KDL,
+            "backup",
+            "rustfs:http://nas:9000/bucket",
+            RemoteSpec {
+                url: "rustfs:http://nas:9000/bucket".to_string(),
+                credentials: "aws".to_string(),
+                mc_max_workers: Some(8),
+                mc_limit_upload: Some("20MiB".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(result.contains("8"));
+        assert!(result.contains(r#""20MiB""#));
     }
 
     const MULTI_CALLS_KDL: &str = r#"default-task "main"

@@ -438,7 +438,7 @@ fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
         }
     };
 
-    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials }) {
+    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials, mc_max_workers: None, mc_limit_upload: None }) {
         Ok(new_kdl) => {
             if let Err(e) = fs::write(config_path, new_kdl) {
                 eprintln!("error: {e}");

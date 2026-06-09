@@ -310,11 +310,42 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
         None => return Ok("Cancelled.".to_string()),
     };
 
+    let (mc_max_workers, mc_limit_upload) = if url.starts_with("rustfs:") {
+        let raw_workers = ask!(inquire::Text::new(
+            "mc --max-workers (leave blank for default):"
+        )
+        .with_placeholder("e.g. 4")
+        .prompt());
+        let p = if raw_workers.trim().is_empty() {
+            None
+        } else {
+            Some(
+                raw_workers
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| format!("'{}' is not a valid integer", raw_workers.trim()))?,
+            )
+        };
+        let raw_limit = ask!(inquire::Text::new(
+            "mc --limit-upload rate (leave blank for no limit):"
+        )
+        .with_placeholder("e.g. 5MiB")
+        .prompt());
+        let l = if raw_limit.trim().is_empty() {
+            None
+        } else {
+            Some(raw_limit.trim().to_string())
+        };
+        (p, l)
+    } else {
+        (None, None)
+    };
+
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::add_remote(
         &kdl,
         &task_name,
-        RemoteSpec { url: url.clone(), credentials: credentials.clone() },
+        RemoteSpec { url: url.clone(), credentials: credentials.clone(), mc_max_workers, mc_limit_upload },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
 
@@ -787,12 +818,48 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
         None => return Ok("Cancelled.".to_string()),
     };
 
+    let (mc_max_workers, mc_limit_upload) = if url.starts_with("rustfs:") {
+        // Pre-fill from the existing remote entry
+        let existing_workers = remote.mc_max_workers.map(|p| p.to_string()).unwrap_or_default();
+        let existing_limit = remote.mc_limit_upload.clone().unwrap_or_default();
+
+        let raw_workers = ask!(inquire::Text::new(
+            "mc --max-workers (leave blank for default):"
+        )
+        .with_initial_value(&existing_workers)
+        .prompt());
+        let p = if raw_workers.trim().is_empty() {
+            None
+        } else {
+            Some(
+                raw_workers
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| format!("'{}' is not a valid integer", raw_workers.trim()))?,
+            )
+        };
+
+        let raw_limit = ask!(inquire::Text::new(
+            "mc --limit-upload rate (leave blank for no limit):"
+        )
+        .with_initial_value(&existing_limit)
+        .prompt());
+        let l = if raw_limit.trim().is_empty() {
+            None
+        } else {
+            Some(raw_limit.trim().to_string())
+        };
+        (p, l)
+    } else {
+        (None, None)
+    };
+
     let kdl = std::fs::read_to_string(&app.config_path).map_err(|e| e.to_string())?;
     let new_kdl = crate::config_editor::edit_remote(
         &kdl,
         &task_name,
         &old_url,
-        RemoteSpec { url: url.clone(), credentials: credentials.clone() },
+        RemoteSpec { url: url.clone(), credentials: credentials.clone(), mc_max_workers, mc_limit_upload },
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
 
