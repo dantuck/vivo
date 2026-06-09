@@ -27,6 +27,8 @@ pub struct TaskEntry {
 pub struct RemoteEntry {
     pub url: String,
     pub credentials: String,
+    pub mc_max_workers: Option<u32>,
+    pub mc_limit_upload: Option<String>,
 }
 
 pub struct App {
@@ -57,11 +59,13 @@ impl App {
                 exclude_file: t.backup_exclude_file().map(str::to_owned),
                 files_from: t.backup_files_from().map(str::to_owned),
                 remotes: t
-                    .backup_remotes()
+                    .backup_remote_entries()
                     .into_iter()
-                    .map(|(url, creds)| RemoteEntry {
-                        url: url.to_string(),
-                        credentials: creds.to_string(),
+                    .map(|r| RemoteEntry {
+                        url: r.url.clone(),
+                        credentials: r.credentials.clone(),
+                        mc_max_workers: r.mc_max_workers,
+                        mc_limit_upload: r.mc_limit_upload.clone(),
                     })
                     .collect(),
                 calls: t.call_names().into_iter().map(str::to_owned).collect(),
