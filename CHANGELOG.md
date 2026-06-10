@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/dantuck/vivo/compare/v0.10.1...v0.11.0) (2026-06-10)
+
+
+### Features
+
+* **config:** expose mc-max-workers and mc-limit-upload in editor and TUI ([709a680](https://github.com/dantuck/vivo/commit/709a6804b1673d062bf6d2e3ab1954a07cfa9125))
+* **remote/rustfs:** add mc-max-workers and mc-limit-upload throttle options ([8c2e3a1](https://github.com/dantuck/vivo/commit/8c2e3a1fb8859816ce91ab9d6683440120804f1a))
+
 ## [0.10.1](https://github.com/dantuck/vivo/compare/v0.10.0...v0.10.1) (2026-06-08)
 
 
