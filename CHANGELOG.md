@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/dantuck/vivo/compare/v0.11.1...v0.11.2) (2026-07-04)
+
+
+### Bug Fixes
+
+* **build:** use classic linker for aarch64-apple-darwin ([f58b280](https://github.com/dantuck/vivo/commit/f58b280fcf8415695dd4aa9d1ab3cd105160ab40))
+
 ## [0.11.1](https://github.com/dantuck/vivo/compare/v0.11.0...v0.11.1) (2026-07-04)
 
 
