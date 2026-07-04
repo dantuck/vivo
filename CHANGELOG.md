@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/dantuck/vivo/compare/v0.11.0...v0.11.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* **ci:** upgrade release-please-action to v5 for native node24 support ([f8cfcd6](https://github.com/dantuck/vivo/commit/f8cfcd699a3d21921c774b8b764d25cb571b8491))
+
 ## [0.11.0](https://github.com/dantuck/vivo/compare/v0.10.1...v0.11.0) (2026-06-10)
 
 
