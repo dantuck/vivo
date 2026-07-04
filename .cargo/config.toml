@@ -1,2 +1,5 @@
 [env]
 VIVO_BACKUP_CONFIG = "sample.kdl"
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-ld_classic"]
