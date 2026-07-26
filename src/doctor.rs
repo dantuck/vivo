@@ -3,8 +3,8 @@ use std::path::Path;
 use std::time::Duration;
 use std::{env, fs, process};
 
-use crate::backup_config::{decrypt_sops_file, parse_secrets, BackupConfig};
-use crate::config::{xdg_config_home, Secrets};
+use crate::backup_config::{age_keys_path, decrypt_sops_file, parse_secrets, BackupConfig};
+use crate::config::Secrets;
 
 pub enum CheckStatus {
     Ok,
@@ -59,14 +59,7 @@ pub fn check_tool_present(name: &str, version_flag: &str, install_hint: &str) ->
 }
 
 pub fn check_age_key() -> CheckResult {
-    let path = if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
-        p
-    } else {
-        xdg_config_home()
-            .join("sops/age/keys.txt")
-            .to_string_lossy()
-            .into_owned()
-    };
+    let path = age_keys_path();
     if Path::new(&path).exists() {
         CheckResult {
             label: format!("age key ({path})"),

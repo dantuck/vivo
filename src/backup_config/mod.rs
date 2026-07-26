@@ -2,6 +2,7 @@ pub mod backup;
 pub(crate) mod task;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command as SysCommand;
 use std::{env, fs};
 
@@ -12,16 +13,23 @@ use crate::backup_config::task::Task;
 use crate::config::{xdg_config_home, Secrets};
 use crate::VivoConfig;
 
-pub fn age_public_key() -> Option<String> {
-    let keys_path = if let Ok(p) = env::var("SOPS_AGE_KEY_FILE") {
-        p
-    } else {
+/// Resolves the age identity file path, honoring `SOPS_AGE_KEY_FILE` if set,
+/// falling back to vivo's XDG-style default. `sops` itself resolves its
+/// default key path via Go's `os.UserConfigDir()`, which on macOS is
+/// `~/Library/Application Support` (ignoring `XDG_CONFIG_HOME`) — so this
+/// path must always be passed explicitly via `SOPS_AGE_KEY_FILE` when
+/// invoking `sops`, rather than relying on its own default resolution.
+pub fn age_keys_path() -> String {
+    env::var("SOPS_AGE_KEY_FILE").unwrap_or_else(|_| {
         xdg_config_home()
             .join("sops/age/keys.txt")
             .to_string_lossy()
             .into_owned()
-    };
-    let contents = fs::read_to_string(&keys_path).ok()?;
+    })
+}
+
+pub fn age_public_key() -> Option<String> {
+    let contents = fs::read_to_string(age_keys_path()).ok()?;
     contents
         .lines()
         .find_map(|line| line.strip_prefix("# public key: "))
@@ -212,6 +220,7 @@ pub struct BackupConfig {
 
 pub fn decrypt_sops_file(file_path: &str) -> Result<String, String> {
     let output = SysCommand::new("sops")
+        .env("SOPS_AGE_KEY_FILE", age_keys_path())
         .arg("-d")
         .arg(file_path)
         .output()
@@ -249,19 +258,30 @@ impl BackupConfig {
             .collect()
     }
 
-    pub fn load_config(config: &VivoConfig) -> Result<(BackupConfig, Secrets), String> {
+    /// Loads config and secrets in a single pass, distinguishing the specific
+    /// failure so callers (e.g. the bare `vivo` entry point) can offer
+    /// targeted guidance without re-deriving these checks or re-invoking
+    /// `sops` themselves.
+    pub fn load_config(config: &VivoConfig) -> Result<(BackupConfig, Secrets), LoadConfigError> {
         let config_path = config.get_config_path();
-        let config_content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("could not read config '{config_path}': {e}"))?;
-
-        let secrets_path = config.get_secrets_path();
-        let decrypted_yaml = decrypt_sops_file(&secrets_path).map_err(|_| {
-            format!(
-                "secrets file must be SOPS-encrypted — run `vivo secrets edit` to fix\n  path: {secrets_path}"
-            )
+        if !Path::new(&config_path).exists() {
+            return Err(LoadConfigError::ConfigMissing { path: config_path });
+        }
+        let config_content = fs::read_to_string(&config_path).map_err(|e| {
+            LoadConfigError::Other(format!("could not read config '{config_path}': {e}"))
         })?;
 
-        let secrets = parse_secrets(&decrypted_yaml)?;
+        let secrets_path = config.get_secrets_path();
+        if !Path::new(&secrets_path).exists() {
+            return Err(LoadConfigError::SecretsMissing { path: secrets_path });
+        }
+        let decrypted_yaml =
+            decrypt_sops_file(&secrets_path).map_err(|e| LoadConfigError::SecretsUndecryptable {
+                path: secrets_path.clone(),
+                detail: e.trim().to_string(),
+            })?;
+
+        let secrets = parse_secrets(&decrypted_yaml).map_err(LoadConfigError::Other)?;
 
         println!(
             "[{}] Loaded secrets from {}",
@@ -270,8 +290,8 @@ impl BackupConfig {
         );
         env::set_var("RESTIC_PASSWORD", &secrets.restic_password);
 
-        let document =
-            parse::<BackupConfig>(&config_path, &config_content).map_err(|e| e.to_string())?;
+        let document = parse::<BackupConfig>(&config_path, &config_content)
+            .map_err(|e| LoadConfigError::Other(e.to_string()))?;
 
         println!(
             "[{}] Loaded configuration from {}",
@@ -279,6 +299,32 @@ impl BackupConfig {
             config_path.cyan()
         );
         Ok((document, secrets))
+    }
+}
+
+#[derive(Debug)]
+pub enum LoadConfigError {
+    ConfigMissing { path: String },
+    SecretsMissing { path: String },
+    SecretsUndecryptable { path: String, detail: String },
+    Other(String),
+}
+
+impl std::fmt::Display for LoadConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadConfigError::ConfigMissing { path } => {
+                write!(f, "could not read config '{path}': No such file or directory")
+            }
+            LoadConfigError::SecretsMissing { path } => {
+                write!(f, "could not read secrets '{path}': No such file or directory")
+            }
+            LoadConfigError::SecretsUndecryptable { path, detail } => write!(
+                f,
+                "secrets file could not be decrypted — run `vivo secrets edit` to fix\n  path: {path}\n  {detail}"
+            ),
+            LoadConfigError::Other(msg) => write!(f, "{msg}"),
+        }
     }
 }
 
