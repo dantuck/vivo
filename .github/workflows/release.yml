@@ -129,13 +129,21 @@ jobs:
           git add src/_version
           git commit -m "chore: release ${VERSION}"
           git push origin "release/${VERSION}" || echo "Branch already exists, continuing."
-          gh pr create \
+
+          if ! pr_output=$(gh pr create \
             --title "chore: release ${VERSION}" \
             --body "Automated release PR — merge to trigger marketing site rebuild." \
             --base main \
             --head "release/${VERSION}" \
-            --repo dantuck/vivo-marketing \
-            || echo "PR already exists, skipping."
+            --repo dantuck/vivo-marketing 2>&1); then
+            if echo "$pr_output" | grep -qi "already exists"; then
+              echo "PR already exists, skipping."
+            else
+              echo "::error::Failed to open marketing release PR:"
+              echo "$pr_output"
+              exit 1
+            fi
+          fi
         env:
           GH_TOKEN: ${{ secrets.MARKETING_DEPLOY_TOKEN }}
           VERSION: ${{ github.event.inputs.tag || github.event.release.tag_name }}
