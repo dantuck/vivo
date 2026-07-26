@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/dantuck/vivo/compare/v0.13.0...v0.14.0) (2026-07-26)
+
+
+### Features
+
+* **doctor:** surface FUSE availability in doctor and init ([a3aeb81](https://github.com/dantuck/vivo/commit/a3aeb81f5d695160b52b82f82f526402f1fd3778))
+
 ## [0.13.0](https://github.com/dantuck/vivo/compare/v0.12.0...v0.13.0) (2026-07-26)
 
 
