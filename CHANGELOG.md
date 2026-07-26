@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/dantuck/vivo/compare/v0.14.0...v0.15.0) (2026-07-26)
+
+
+### Features
+
+* **doctor:** auto-install FUSE via doctor --fix and vivo init ([a6d0463](https://github.com/dantuck/vivo/commit/a6d046353bec31756dc3b3e3184655b65bcce697))
+
 ## [0.14.0](https://github.com/dantuck/vivo/compare/v0.13.0...v0.14.0) (2026-07-26)
 
 
