@@ -422,11 +422,20 @@ fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
         return false;
     }
 
-    // FUSE is only needed for `vivo mount`, so surface it without blocking init.
+    // FUSE is only needed for `vivo mount`, so it doesn't block init — but
+    // offer to install it now rather than just telling the user about it later.
     let fuse = vivo::doctor::check_fuse();
     vivo::doctor::print_result(&fuse);
     if matches!(fuse.status, vivo::doctor::CheckStatus::Fail) {
-        println!("  (only needed for `vivo mount` — install later if you plan to use it)");
+        println!("  (only needed for `vivo mount`)");
+        match vivo::doctor::fix_fuse() {
+            Ok(true) => {
+                let fuse = vivo::doctor::check_fuse();
+                vivo::doctor::print_result(&fuse);
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("error: {e}"),
+        }
     }
 
     println!();
