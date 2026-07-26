@@ -437,6 +437,106 @@ pub fn check_remote_connectivity(
 }
 
 #[cfg(target_os = "linux")]
+enum FuseInstallMethod {
+    Apt,
+    Dnf,
+    Unsupported,
+}
+
+#[cfg(target_os = "linux")]
+fn detect_fuse_install_method() -> FuseInstallMethod {
+    let has = |bin: &str| {
+        process::Command::new("which")
+            .arg(bin)
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if has("apt-get") {
+        FuseInstallMethod::Apt
+    } else if has("dnf") {
+        FuseInstallMethod::Dnf
+    } else {
+        FuseInstallMethod::Unsupported
+    }
+}
+
+/// Installs FUSE. Prompts for confirmation, then runs the platform's
+/// install command (via `sudo` on Linux, `brew` on macOS).
+#[cfg(target_os = "linux")]
+pub fn fix_fuse() -> Result<bool, String> {
+    let (program, args): (&str, Vec<&str>) = match detect_fuse_install_method() {
+        FuseInstallMethod::Apt => ("sudo", vec!["apt-get", "install", "-y", "fuse3"]),
+        FuseInstallMethod::Dnf => ("sudo", vec!["dnf", "install", "-y", "fuse3"]),
+        FuseInstallMethod::Unsupported => {
+            println!("Could not detect a supported package manager (apt-get or dnf).");
+            println!("Install FUSE manually, e.g.: sudo apt install fuse  OR  sudo dnf install fuse");
+            return Ok(false);
+        }
+    };
+
+    println!("\nProposed fix: install FUSE");
+    println!("Command: {program} {}", args.join(" "));
+
+    match inquire::Confirm::new("Install FUSE now?")
+        .with_default(false)
+        .prompt()
+    {
+        Ok(true) => {}
+        _ => return Ok(false),
+    }
+
+    let status = process::Command::new(program)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("failed to run {program}: {e}"))?;
+    if !status.success() {
+        return Err(format!("install command exited with status {status}"));
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+pub fn fix_fuse() -> Result<bool, String> {
+    println!("\nProposed fix: install macFUSE");
+    println!("Command: brew install --cask macfuse");
+
+    match inquire::Confirm::new("Install macFUSE now?")
+        .with_default(false)
+        .prompt()
+    {
+        Ok(true) => {}
+        _ => return Ok(false),
+    }
+
+    let status = process::Command::new("brew")
+        .args(["install", "--cask", "macfuse"])
+        .status()
+        .map_err(|e| format!("failed to run brew: {e}"))?;
+    if !status.success() {
+        return Err(format!("brew install failed with status {status}"));
+    }
+
+    println!(
+        "\nmacFUSE installed. macOS requires approving the system extension in \
+         System Settings → Privacy & Security, and may require a reboot, before `vivo mount` will work."
+    );
+    Ok(true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn fix_fuse() -> Result<bool, String> {
+    println!(
+        "Auto-install is not supported on this platform ({}/{}).",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
 pub fn check_fuse() -> CheckResult {
     let found = ["fusermount", "fusermount3"].iter().any(|bin| {
         process::Command::new(bin)
@@ -474,8 +574,12 @@ pub fn check_fuse() -> CheckResult {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
+    // macFUSE 3.x installed a kernel extension at macfuse.kext; macFUSE 4.x+
+    // (the current `brew install --cask macfuse`) installs a system-extension
+    // bundle at macfuse.fs instead, and doesn't put mount_macfuse on $PATH.
     let kext_exists = std::path::Path::new("/Library/Filesystems/macfuse.kext").exists();
-    if has_mount || kext_exists {
+    let fs_bundle_exists = std::path::Path::new("/Library/Filesystems/macfuse.fs").exists();
+    if has_mount || kext_exists || fs_bundle_exists {
         CheckResult {
             label: "FUSE (macFUSE)".to_string(),
             status: CheckStatus::Ok,
@@ -534,7 +638,8 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
     // FUSE is only needed for `vivo mount`, not the core backup pipeline,
     // so a missing install is a warning here rather than a required failure.
     let mut fuse = check_fuse();
-    if matches!(fuse.status, CheckStatus::Fail) {
+    let fuse_failed = matches!(fuse.status, CheckStatus::Fail);
+    if fuse_failed {
         fuse.status = CheckStatus::Warn;
         warnings += 1;
     }
@@ -591,18 +696,32 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
     }
 
     if fix {
+        let mut fixed_something = false;
         if s3_tool_failed {
             match fix_s3_sync_tool() {
-                Ok(true) => {
-                    println!();
-                    return run_doctor(config_path, secrets_path, false);
-                }
+                Ok(true) => fixed_something = true,
                 Ok(false) => {}
                 Err(e) => eprintln!("error: {e}"),
             }
         }
-    } else if s3_tool_failed {
-        println!("Tip: run 'vivo doctor --fix' to auto-install missing tools.");
+        if fuse_failed {
+            match fix_fuse() {
+                Ok(true) => fixed_something = true,
+                Ok(false) => {}
+                Err(e) => eprintln!("error: {e}"),
+            }
+        }
+        if fixed_something {
+            println!();
+            return run_doctor(config_path, secrets_path, false);
+        }
+    } else {
+        if s3_tool_failed {
+            println!("Tip: run 'vivo doctor --fix' to auto-install missing tools.");
+        }
+        if fuse_failed {
+            println!("Tip: run 'vivo doctor --fix' to auto-install FUSE.");
+        }
     }
 
     if required_failures > 0 { 1 } else { 0 }
