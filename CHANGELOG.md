@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/dantuck/vivo/compare/v0.12.0...v0.13.0) (2026-07-26)
+
+
+### Features
+
+* **init:** guide users through first backup setup interactively ([5e7ac44](https://github.com/dantuck/vivo/commit/5e7ac44ac25d009969a80168153d3fafc2467f6e))
+
 ## [0.12.0](https://github.com/dantuck/vivo/compare/v0.11.2...v0.12.0) (2026-07-26)
 
 
