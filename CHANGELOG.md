@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/dantuck/vivo/compare/v0.11.2...v0.12.0) (2026-07-26)
+
+
+### Features
+
+* **cli:** guide first-run setup and fix macOS secrets decryption ([a633a32](https://github.com/dantuck/vivo/commit/a633a320b56c5fd46c4ec3d9131dcded076991b5))
+
 ## [0.11.2](https://github.com/dantuck/vivo/compare/v0.11.1...v0.11.2) (2026-07-04)
 
 
