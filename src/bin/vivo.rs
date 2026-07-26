@@ -49,6 +49,11 @@ tasks {{
     )
 }
 
+/// Minimal valid config written before the interactive wizard fills it in.
+/// `default-task` must be present (knuffel requires it) but is set for real
+/// once a task exists.
+const SKELETON_CONFIG_TEMPLATE: &str = "default-task \"\"\n\ntasks {\n}\n";
+
 const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
 
 const EXCLUDES_TEMPLATE: &str = "\
@@ -121,6 +126,126 @@ fn create_with_template(path: &str, contents: &str) -> Result<bool, String> {
     ensure_parent_dirs(path)?;
     fs::write(path, contents).map_err(|e| format!("could not write file: {e}"))?;
     Ok(true)
+}
+
+/// Guides the user through creating their first backup task interactively:
+/// what to back up, where the restic repo lives, and (optionally) a remote
+/// sync destination. Falls back to the static template when stdin isn't a
+/// TTY. Returns true on success (including "already existed").
+fn cmd_config_init_interactive(config_path: &str) -> bool {
+    if Path::new(config_path).exists() {
+        println!("Config already exists: {config_path}");
+        return true;
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return cmd_config_init(config_path);
+    }
+
+    println!("Let's set up your first backup.\n");
+
+    let directory = inquire::Text::new("Which directory would you like to back up?")
+        .with_default("$HOME")
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0));
+
+    let repo = inquire::Text::new("Where should the restic repository be stored?")
+        .with_default("$HOME/.local/share/restic/main")
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0));
+
+    let add_remote = inquire::Confirm::new("Add a remote sync destination now?")
+        .with_default(false)
+        .with_help_message("You can always add one later with `vivo remote add`")
+        .prompt()
+        .unwrap_or(false);
+
+    let remote = if add_remote {
+        let remote_type = inquire::Select::new(
+            "Remote type:",
+            vec!["S3-compatible (s3:)", "Backblaze B2 (b2:)", "RustFS/custom (rustfs:)"],
+        )
+        .prompt()
+        .unwrap_or_else(|_| process::exit(0));
+
+        let (default_url, default_creds) = match remote_type {
+            "S3-compatible (s3:)" => ("s3:https://s3.amazonaws.com/my-bucket", "aws"),
+            "Backblaze B2 (b2:)" => ("b2:my-bucket:restic/main", "b2"),
+            _ => ("rustfs:http://your-nas:9000/backup", "rustfs"),
+        };
+
+        let url = inquire::Text::new("Remote URL:")
+            .with_default(default_url)
+            .prompt()
+            .unwrap_or_else(|_| process::exit(0));
+        let credentials = inquire::Text::new("Credentials profile name:")
+            .with_default(default_creds)
+            .prompt()
+            .unwrap_or_else(|_| process::exit(0));
+
+        Some((url, credentials))
+    } else {
+        None
+    };
+
+    if let Err(e) = create_with_template(config_path, SKELETON_CONFIG_TEMPLATE) {
+        eprintln!("error: {e}");
+        return false;
+    }
+
+    let kdl = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: could not read config '{config_path}': {e}");
+            return false;
+        }
+    };
+
+    let task_name = "backup";
+    let build = || -> Result<String, String> {
+        let kdl = vivo::add_task(
+            &kdl,
+            vivo::TaskSpec {
+                name: task_name.to_string(),
+                repo: Some(repo.clone()),
+                directory: Some(directory.clone()),
+                exclude_file: Some(DEFAULT_EXCLUDES_PATH.to_string()),
+            },
+        )?;
+        let kdl = if let Some((url, credentials)) = &remote {
+            vivo::add_remote(
+                &kdl,
+                task_name,
+                vivo::RemoteSpec {
+                    url: url.clone(),
+                    credentials: credentials.clone(),
+                    mc_max_workers: None,
+                    mc_limit_upload: None,
+                },
+            )?
+        } else {
+            kdl
+        };
+        vivo::set_default_task(&kdl, task_name)
+    };
+
+    match build() {
+        Ok(new_kdl) => {
+            if let Err(e) = fs::write(config_path, new_kdl) {
+                eprintln!("error: could not write config: {e}");
+                return false;
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return false;
+        }
+    }
+
+    ensure_path(&repo);
+    ensure_path(&directory);
+    println!("\nCreated config: {config_path}");
+    ensure_default_excludes_file()
 }
 
 /// Creates the config file (and its default excludes file) if missing.
@@ -298,7 +423,7 @@ fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
     }
 
     println!();
-    let config_ok = cmd_config_init(config_path);
+    let config_ok = cmd_config_init_interactive(config_path);
     let secrets_ok = cmd_secrets_init(secrets_path);
     if !config_ok || !secrets_ok {
         return false;
