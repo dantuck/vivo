@@ -13,37 +13,71 @@ fn ensure_path(path: &str) {
     }
 }
 
-const CONFIG_TEMPLATE: &str = r#"default-task "backup"
+const DEFAULT_EXCLUDES_PATH: &str = "$HOME/.config/vivo/excludes";
 
-tasks {
-    task "backup" {
+fn config_template() -> String {
+    format!(
+        r#"default-task "backup"
+
+tasks {{
+    task "backup" {{
         description "Main backup task"
-        backup {
+        backup {{
             repo "$HOME/.local/share/restic/main"
             directory "$HOME"
-            exclude-file "$HOME/.config/vivo/excludes"
-            retention {
+            exclude-file "{DEFAULT_EXCLUDES_PATH}"
+            retention {{
                 daily 7
                 weekly 5
                 monthly 12
                 yearly 2
-            }
+            }}
             // Add remotes here, e.g.:
-            // remote "rustfs:http://your-nas:9000/backup" {
+            // remote "rustfs:http://your-nas:9000/backup" {{
             //     credentials "rustfs"
-            // }
-            // remote "s3:https://s3.amazonaws.com/my-bucket" {
+            // }}
+            // remote "s3:https://s3.amazonaws.com/my-bucket" {{
             //     credentials "aws"
-            // }
-            // remote "b2:my-bucket:restic/main" {
+            // }}
+            // remote "b2:my-bucket:restic/main" {{
             //     credentials "b2"
-            // }
+            // }}
+        }}
+    }}
+}}
+"#
+    )
+}
+
+const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
+
+const EXCLUDES_TEMPLATE: &str = "\
+.DS_Store
+.Trash
+.cache
+node_modules
+target
+.venv
+__pycache__
+*.tmp
+";
+
+/// Creates the default excludes file referenced by the config template's
+/// `exclude-file` entry (DEFAULT_EXCLUDES_PATH), if it doesn't already exist.
+fn ensure_default_excludes_file() -> bool {
+    let path = expand_env_vars(DEFAULT_EXCLUDES_PATH);
+    match create_with_template(&path, EXCLUDES_TEMPLATE) {
+        Ok(true) => {
+            println!("Created excludes file: {path}");
+            true
+        }
+        Ok(false) => true,
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
         }
     }
 }
-"#;
-
-const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
 
 fn open_in_editor(path: &str) {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
@@ -52,9 +86,22 @@ fn open_in_editor(path: &str) {
     }
 }
 
-fn open_with_sops(path: &str) {
-    if let Err(e) = process::Command::new("sops").arg(path).status() {
-        eprintln!("error: could not run sops: {e}");
+/// Opens `path` in `sops`. Returns true if `sops` ran and exited successfully.
+fn open_with_sops(path: &str) -> bool {
+    match process::Command::new("sops")
+        .env("SOPS_AGE_KEY_FILE", vivo::age_keys_path())
+        .arg(path)
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("error: sops exited with {status}");
+            false
+        }
+        Err(e) => {
+            eprintln!("error: could not run sops: {e}");
+            false
+        }
     }
 }
 
@@ -76,18 +123,35 @@ fn create_with_template(path: &str, contents: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-fn cmd_config_init(config_path: &str) {
-    match create_with_template(config_path, CONFIG_TEMPLATE) {
-        Ok(true) => println!("Created config: {config_path}"),
-        Ok(false) => println!("Config already exists: {config_path}"),
-        Err(e) => eprintln!("error: {e}"),
+/// Creates the config file (and its default excludes file) if missing.
+/// Returns true on success (including "already existed").
+fn cmd_config_init(config_path: &str) -> bool {
+    match create_with_template(config_path, &config_template()) {
+        Ok(true) => {
+            println!("Created config: {config_path}");
+            ensure_default_excludes_file()
+        }
+        Ok(false) => {
+            println!("Config already exists: {config_path}");
+            true
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
     }
 }
 
 fn cmd_config_edit(config_path: &str) {
-    if let Err(e) = create_with_template(config_path, CONFIG_TEMPLATE) {
-        eprintln!("error: {e}");
-        return;
+    match create_with_template(config_path, &config_template()) {
+        Ok(true) => {
+            ensure_default_excludes_file();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("error: {e}");
+            return;
+        }
     }
     open_in_editor(config_path);
 }
@@ -99,25 +163,27 @@ fn cmd_config_show(config_path: &str) {
     }
 }
 
-fn cmd_secrets_init(secrets_path: &str) {
+/// Creates the encrypted secrets file if missing. Returns true on success
+/// (including "already existed").
+fn cmd_secrets_init(secrets_path: &str) -> bool {
     if Path::new(secrets_path).exists() {
         println!("Secrets file already exists: {secrets_path}");
-        return;
+        return true;
     }
     if let Err(e) = ensure_parent_dirs(secrets_path) {
         eprintln!("error: {e}");
-        return;
+        return false;
     }
 
     let Some(recipient) = age_public_key() else {
         eprintln!("error: no age key found — run: age-keygen -o ~/.config/sops/age/keys.txt");
-        return;
+        return false;
     };
 
     let tmp_path = env::temp_dir().join("vivo-secrets-init.tmp");
     if let Err(e) = fs::write(&tmp_path, SECRETS_TEMPLATE) {
         eprintln!("error: could not write secrets template: {e}");
-        return;
+        return false;
     }
 
     let output = process::Command::new("sops")
@@ -134,9 +200,16 @@ fn cmd_secrets_init(secrets_path: &str) {
         Ok(o) if o.status.success() => {
             println!("Created encrypted secrets: {secrets_path}");
             println!("Run `vivo secrets edit` to set your restic_password and credentials.");
+            true
         }
-        Ok(o) => eprintln!("error: sops encryption failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => eprintln!("error: could not run sops: {e}"),
+        Ok(o) => {
+            eprintln!("error: sops encryption failed: {}", String::from_utf8_lossy(&o.stderr));
+            false
+        }
+        Err(e) => {
+            eprintln!("error: could not run sops: {e}");
+            false
+        }
     }
 }
 
@@ -199,7 +272,9 @@ fn cmd_secrets_show(secrets_path: &str) {
     }
 }
 
-fn cmd_init(config_path: &str, secrets_path: &str) {
+/// Runs the full guided setup: prerequisite checks, then config/secrets
+/// creation. Returns true only if every step succeeded.
+fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
     vivo::ui::print_banner();
     println!("Checking prerequisites...");
 
@@ -219,18 +294,110 @@ fn cmd_init(config_path: &str, secrets_path: &str) {
 
     if !ok {
         eprintln!("\nInstall missing prerequisites and re-run `vivo init`.");
-        return;
+        return false;
     }
 
     println!();
-    cmd_config_init(config_path);
-    cmd_secrets_init(secrets_path);
+    let config_ok = cmd_config_init(config_path);
+    let secrets_ok = cmd_secrets_init(secrets_path);
+    if !config_ok || !secrets_ok {
+        return false;
+    }
 
     println!();
     println!("Setup complete. Next steps:");
     println!("  1. Edit your backup config:  vivo config edit");
     println!("  2. Set your restic password: vivo secrets edit");
     println!("  3. Run a dry-run backup:     vivo --dry-run");
+    true
+}
+
+/// Reacts to a `LoadConfigError`: guides the user through a fix when stdin
+/// is a TTY, otherwise prints an actionable error. Exits the process on
+/// unrecoverable or failed-repair cases so callers can just `return` after
+/// calling this (the process either already exited, or repair guidance ran).
+fn handle_load_error(err: &vivo::LoadConfigError, config_path: &str, secrets_path: &str) {
+    let interactive = std::io::stdin().is_terminal();
+    match err {
+        vivo::LoadConfigError::ConfigMissing { path } => {
+            if interactive {
+                println!("No config found at '{path}' — let's set one up.\n");
+                if !cmd_init(config_path, secrets_path) {
+                    process::exit(1);
+                }
+            } else {
+                eprintln!("error: {err}");
+                eprintln!("Run `vivo init` to get started.");
+                process::exit(1);
+            }
+        }
+        vivo::LoadConfigError::SecretsMissing { path } => {
+            if interactive {
+                println!("No secrets file found at '{path}' — let's create one.\n");
+                if cmd_secrets_init(secrets_path) {
+                    println!("\nSet your restic password, then re-run vivo:");
+                    println!("  vivo secrets edit");
+                } else {
+                    process::exit(1);
+                }
+            } else {
+                eprintln!("error: {err}");
+                eprintln!("Run `vivo secrets init` to get started.");
+                process::exit(1);
+            }
+        }
+        vivo::LoadConfigError::SecretsUndecryptable { path, detail } => {
+            if interactive {
+                println!("Secrets file at '{path}' could not be decrypted:");
+                println!("  {detail}");
+                println!("\nOpening it in `sops` so you can fix it — set restic_password and save.\n");
+                if !open_with_sops(path) {
+                    eprintln!(
+                        "error: secrets are still not fixed. Run `vivo secrets edit` to try again."
+                    );
+                    process::exit(1);
+                }
+            } else {
+                eprintln!("error: {err}");
+                process::exit(1);
+            }
+        }
+        vivo::LoadConfigError::Other(msg) => eprintln!("error: {msg}"),
+    }
+}
+
+/// Checks that config and secrets are present and decryptable, guiding the
+/// user through fixes if stdin is a TTY. Returns true if it's safe to
+/// proceed to the caller's real work.
+fn ensure_onboarded(config_path: &str, secrets_path: &str) -> bool {
+    if !Path::new(config_path).exists() {
+        handle_load_error(
+            &vivo::LoadConfigError::ConfigMissing { path: config_path.to_string() },
+            config_path,
+            secrets_path,
+        );
+        return false;
+    }
+    if !Path::new(secrets_path).exists() {
+        handle_load_error(
+            &vivo::LoadConfigError::SecretsMissing { path: secrets_path.to_string() },
+            config_path,
+            secrets_path,
+        );
+        return false;
+    }
+    if let Err(e) = decrypt_sops_file(secrets_path) {
+        handle_load_error(
+            &vivo::LoadConfigError::SecretsUndecryptable {
+                path: secrets_path.to_string(),
+                detail: e.trim().to_string(),
+            },
+            config_path,
+            secrets_path,
+        );
+        return false;
+    }
+    true
 }
 
 fn cmd_doctor(config_path: &str, secrets_path: &str, fix: bool) {
@@ -546,12 +713,18 @@ fn main() {
 
     match matches.subcommand() {
         Some(("init", _)) => {
-            cmd_init(&config_path, &secrets_path);
+            if !cmd_init(&config_path, &secrets_path) {
+                process::exit(1);
+            }
             return;
         }
         Some(("config", sub)) => {
             match sub.subcommand() {
-                Some(("init", _)) => cmd_config_init(&config_path),
+                Some(("init", _)) => {
+                    if !cmd_config_init(&config_path) {
+                        process::exit(1);
+                    }
+                }
                 Some(("edit", _)) => cmd_config_edit(&config_path),
                 Some(("show", _)) => cmd_config_show(&config_path),
                 _ => unreachable!(),
@@ -560,7 +733,11 @@ fn main() {
         }
         Some(("secrets", sub)) => {
             match sub.subcommand() {
-                Some(("init", _)) => cmd_secrets_init(&secrets_path),
+                Some(("init", _)) => {
+                    if !cmd_secrets_init(&secrets_path) {
+                        process::exit(1);
+                    }
+                }
                 Some(("edit", _)) => cmd_secrets_edit(&secrets_path),
                 Some(("show", _)) => cmd_secrets_show(&secrets_path),
                 Some(("import-b2", _)) => cmd_secrets_import_b2(&secrets_path),
@@ -588,6 +765,9 @@ fn main() {
             return;
         }
         Some(("mount", sub)) => {
+            if !ensure_onboarded(&config_path, &secrets_path) {
+                return;
+            }
             let mount_path = sub.get_one::<String>("path").map(String::as_str);
             if let Err(e) = vivo::mount::run(&config_path, &secrets_path, mount_path) {
                 eprintln!("error: {e}");
@@ -596,6 +776,9 @@ fn main() {
             return;
         }
         Some(("manage", _)) => {
+            if !ensure_onboarded(&config_path, &secrets_path) {
+                return;
+            }
             if let Err(e) = vivo::tui::run(&config_path) {
                 eprintln!("error: {e}");
                 process::exit(1);
@@ -632,7 +815,7 @@ fn main() {
                 None => eprintln!("error: task '{task_name}' not found in config"),
             }
         }
-        Err(e) => eprintln!("error: {e}"),
+        Err(e) => handle_load_error(&e, &config_path, &secrets_path),
     }
 
     if let Some(ref latest) = update_notice {
