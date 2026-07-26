@@ -422,6 +422,13 @@ fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
         return false;
     }
 
+    // FUSE is only needed for `vivo mount`, so surface it without blocking init.
+    let fuse = vivo::doctor::check_fuse();
+    vivo::doctor::print_result(&fuse);
+    if matches!(fuse.status, vivo::doctor::CheckStatus::Fail) {
+        println!("  (only needed for `vivo mount` — install later if you plan to use it)");
+    }
+
     println!();
     let config_ok = cmd_config_init_interactive(config_path);
     let secrets_ok = cmd_secrets_init(secrets_path);

@@ -531,6 +531,15 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
         results.push(pw);
     }
 
+    // FUSE is only needed for `vivo mount`, not the core backup pipeline,
+    // so a missing install is a warning here rather than a required failure.
+    let mut fuse = check_fuse();
+    if matches!(fuse.status, CheckStatus::Fail) {
+        fuse.status = CheckStatus::Warn;
+        warnings += 1;
+    }
+    results.push(fuse);
+
     let mut s3_tool_failed = false;
 
     let maybe_backup_config: Option<BackupConfig> = fs::read_to_string(config_path)
