@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/dantuck/vivo/compare/v0.15.0...v0.15.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* expand leading ~ to $HOME in repo/directory paths ([d337b16](https://github.com/dantuck/vivo/commit/d337b16af4e72b14a9b84988e799bcec44c5c6fd))
+
 ## [0.15.0](https://github.com/dantuck/vivo/compare/v0.14.0...v0.15.0) (2026-07-26)
 
 
