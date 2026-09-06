@@ -55,12 +55,24 @@ struct BackupRetention {
 
 static ENV_VAR_RE: OnceLock<Regex> = OnceLock::new();
 
+// restic/std::process never run through a shell, so a literal leading `~` is
+// never expanded on its own; without this it resolves relative to cwd instead
+// of $HOME.
 pub fn expand_env_vars(path: &str) -> String {
     let re = ENV_VAR_RE.get_or_init(|| Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap());
-    re.replace_all(path, |caps: &regex::Captures| {
+    let expanded = re.replace_all(path, |caps: &regex::Captures| {
         env::var(&caps[1]).unwrap_or_else(|_| caps[0].to_string())
-    })
-    .to_string()
+    });
+
+    match expanded.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            match env::var("HOME") {
+                Ok(home) => format!("{home}{rest}"),
+                Err(_) => expanded.to_string(),
+            }
+        }
+        _ => expanded.to_string(),
+    }
 }
 
 fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> {
@@ -253,7 +265,20 @@ impl Backup {
 
 #[cfg(test)]
 mod tests {
+    use super::expand_env_vars;
     use crate::backup_config::BackupConfig;
+
+    #[test]
+    fn expand_env_vars_expands_leading_tilde() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_env_vars("~/.restic/repo/sync"), format!("{home}/.restic/repo/sync"));
+        assert_eq!(expand_env_vars("~"), home);
+    }
+
+    #[test]
+    fn expand_env_vars_leaves_non_home_tilde_alone() {
+        assert_eq!(expand_env_vars("~backup/.restic"), "~backup/.restic");
+    }
 
     #[test]
     fn remote_parses_mc_max_workers() {
