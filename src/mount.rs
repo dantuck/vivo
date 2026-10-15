@@ -281,7 +281,7 @@ tasks {{
     }
 
     fn parse_tasks(kdl: &str) -> Vec<crate::backup_config::task::Task> {
-        let config: crate::BackupConfig = knuffel::parse("<test>", kdl).unwrap();
+        let config: crate::BackupConfig = crate::BackupConfig::parse("<test>", kdl).unwrap();
         config.tasks
     }
 

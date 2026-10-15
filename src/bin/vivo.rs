@@ -58,7 +58,7 @@ tasks {{
 }
 
 /// Minimal valid config written before the interactive wizard fills it in.
-/// `default-task` must be present (knuffel requires it) but is set for real
+/// `default-task` must be present (the config parser requires it) but is set for real
 /// once a task exists.
 const SKELETON_CONFIG_TEMPLATE: &str = "default-task \"\"\n\ntasks {\n}\n";
 

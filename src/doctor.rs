@@ -85,7 +85,7 @@ pub fn check_config(config_path: &str) -> CheckResult {
             status: CheckStatus::Fail,
             detail: Some(format!("{e} — run `vivo config init`")),
         },
-        Ok(content) => match knuffel::parse::<BackupConfig>(config_path, &content) {
+        Ok(content) => match BackupConfig::parse(config_path, &content) {
             Err(e) => CheckResult {
                 label,
                 status: CheckStatus::Fail,
@@ -631,7 +631,7 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
 
     let maybe_backup_config: Option<BackupConfig> = fs::read_to_string(config_path)
         .ok()
-        .and_then(|content| knuffel::parse::<BackupConfig>(config_path, &content).ok());
+        .and_then(|content| BackupConfig::parse(config_path, &content).ok());
 
     if let Some(ref backup_config) = maybe_backup_config {
         let needs_s3_tool = backup_config

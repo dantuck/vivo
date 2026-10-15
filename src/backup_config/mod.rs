@@ -1,5 +1,7 @@
 pub mod backup;
+pub(crate) mod kdl_decode;
 pub(crate) mod task;
+pub use kdl_decode::ConfigError;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,8 +9,8 @@ use std::process::Command as SysCommand;
 use std::{env, fs};
 
 use colored::*;
-use knuffel::parse;
 
+use crate::backup_config::kdl_decode::Source;
 use crate::backup_config::task::Task;
 use crate::config::{xdg_config_home, Secrets};
 use crate::VivoConfig;
@@ -107,12 +109,36 @@ pub fn import_b2_credentials(secrets_path: &str) -> Result<HashMap<String, Strin
     Ok(creds)
 }
 
-#[derive(knuffel::Decode, Debug)]
+#[derive(Debug)]
 pub struct BackupConfig {
-    #[knuffel(child, unwrap(argument))]
     pub default_task: String,
-    #[knuffel(child, unwrap(children(name = "task")))]
     pub tasks: Vec<Task>,
+}
+
+impl BackupConfig {
+    /// Parses KDL config text. `path` is only used in error messages.
+    pub fn parse(path: &str, text: &str) -> Result<Self, ConfigError> {
+        let src = Source { path, text };
+        let doc = src.parse_document()?;
+        let top = doc.nodes();
+        src.only(top, &["default-task", "tasks"])?;
+
+        let default_task = match src.optional(top, "default-task")? {
+            Some(n) => src.string_value(n)?,
+            None => return Err(src.file_error("missing required 'default-task' node")),
+        };
+        let tasks_node = match src.optional(top, "tasks")? {
+            Some(n) => n,
+            None => return Err(src.file_error("missing required 'tasks' node")),
+        };
+        let task_nodes = src.children(tasks_node);
+        src.only(task_nodes, &["task"])?;
+        let tasks = task_nodes
+            .iter()
+            .map(|n| Task::decode(&src, n))
+            .collect::<Result<_, _>>()?;
+        Ok(BackupConfig { default_task, tasks })
+    }
 }
 
 pub fn decrypt_sops_file(file_path: &str) -> Result<String, String> {
@@ -176,7 +202,7 @@ impl BackupConfig {
     pub fn from_file(path: &str) -> Result<Self, String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("could not read config '{path}': {e}"))?;
-        parse::<BackupConfig>(path, &content).map_err(|e| e.to_string())
+        BackupConfig::parse(path, &content).map_err(|e| e.to_string())
     }
 
     pub fn all_remotes(&self) -> Vec<(&str, &str)> {
@@ -226,7 +252,7 @@ impl BackupConfig {
         );
         env::set_var("RESTIC_PASSWORD", &secrets.restic_password);
 
-        let document = parse::<BackupConfig>(&config_path, &config_content)
+        let document = BackupConfig::parse(&config_path, &config_content)
             .map_err(|e| LoadConfigError::Other(e.to_string()))?;
 
         println!(
@@ -378,7 +404,7 @@ mod tests {
     use super::*;
 
     fn parse(src: &str) -> BackupConfig {
-        knuffel::parse::<BackupConfig>("test", src).unwrap()
+        BackupConfig::parse("test", src).unwrap()
     }
 
     #[test]
@@ -417,6 +443,123 @@ mod tests {
         let wrapped = "data: |\n  restic_password: hunter2\n  credentials: {}\n";
         let out = mask_secrets_yaml(wrapped).unwrap();
         assert!(out.contains("restic_password") && !out.contains("hunter2"));
+    }
+
+    fn parse_err(src: &str) -> String {
+        BackupConfig::parse("cfg.kdl", src).unwrap_err().to_string()
+    }
+
+    const ONE_TASK: &str = r#"default-task "t"
+tasks {
+    task "t" {
+        backup {
+            repo "/tmp/r"
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn parses_repo_sample_config() {
+        let cfg = BackupConfig::parse("sample.kdl", include_str!("../../sample.kdl")).unwrap();
+        assert_eq!(cfg.default_task, "backup");
+        assert_eq!(cfg.tasks.len(), 2);
+        assert_eq!(cfg.tasks[0].backup_remotes().len(), 1);
+    }
+
+    #[test]
+    fn parses_all_fields() {
+        let cfg = BackupConfig::parse(
+            "cfg.kdl",
+            r#"
+default-task "all"
+tasks {
+    // comments are fine
+    task "docs" {
+        description "Docs"
+        backup {
+            repo "/r"
+            directory "/d"
+            exclude-file "/x"
+            files-from "/f"
+            dry-run #true
+            retention { daily 1; weekly 2; monthly 3; yearly 4 }
+            remote "b2:bkt" { credentials "b2" }
+        }
+        command "echo hi"
+        calls "other"
+    }
+    task "all" { calls "docs" }
+}
+"#,
+        )
+        .unwrap();
+        let t = &cfg.tasks[0];
+        assert_eq!(t.description(), Some("Docs"));
+        assert_eq!(t.backup_directory(), Some("/d"));
+        assert_eq!(t.backup_exclude_file(), Some("/x"));
+        assert_eq!(t.backup_files_from(), Some("/f"));
+        assert_eq!(t.call_names(), vec!["other"]);
+        assert_eq!(t.backup_remotes(), vec![("b2:bkt", "b2")]);
+        assert_eq!(cfg.tasks[1].call_names(), vec!["docs"]);
+    }
+
+    #[test]
+    fn reads_kdl_v1_booleans_from_older_configs() {
+        let v1 = ONE_TASK.replace("repo \"/tmp/r\"", "repo \"/tmp/r\"\n            dry-run true");
+        assert!(BackupConfig::parse("cfg.kdl", &v1).is_ok());
+    }
+
+    #[test]
+    fn parses_the_init_skeleton() {
+        let cfg = BackupConfig::parse("cfg.kdl", "default-task \"\"\n\ntasks {\n}\n").unwrap();
+        assert!(cfg.tasks.is_empty());
+    }
+
+    #[test]
+    fn unknown_node_reports_line_and_column() {
+        let err = parse_err("default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n            repo \"/r\"\n            exlude-file \"/x\"\n        }\n    }\n}\n");
+        assert!(err.starts_with("cfg.kdl:6:"), "{err}");
+        assert!(err.contains("unexpected node 'exlude-file'"), "{err}");
+    }
+
+    #[test]
+    fn missing_repo_is_an_error() {
+        let err = parse_err("default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n        }\n    }\n}\n");
+        assert!(err.contains("missing required 'repo'"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_singular_node_is_an_error() {
+        let err = parse_err(&ONE_TASK.replace("repo \"/tmp/r\"", "repo \"/a\"\n            repo \"/b\""));
+        assert!(err.contains("duplicate 'repo'"), "{err}");
+    }
+
+    #[test]
+    fn wrong_value_types_are_errors() {
+        let bad_workers = r#"default-task "t"
+tasks { task "t" { backup { repo "/r"
+    remote "rustfs:http://h/b" { credentials "c"
+        mc-max-workers "two" } } } }
+"#;
+        assert!(parse_err(bad_workers).contains("'mc-max-workers' must be a whole number"));
+        let big = ONE_TASK.replace("repo \"/tmp/r\"", "repo \"/r\"\n            retention { daily 99999 }");
+        assert!(parse_err(&big).contains("'daily' is out of range"));
+        let two_args = ONE_TASK.replace("repo \"/tmp/r\"", "repo \"/a\" \"/b\"");
+        assert!(parse_err(&two_args).contains("exactly one value"));
+    }
+
+    #[test]
+    fn missing_top_level_nodes_are_errors() {
+        assert!(parse_err("tasks {\n}\n").contains("missing required 'default-task'"));
+        assert!(parse_err("default-task \"t\"\n").contains("missing required 'tasks'"));
+        assert!(parse_err("default-task \"t\"\ntasks {\n}\nextra 1\n").contains("unexpected node 'extra'"));
+    }
+
+    #[test]
+    fn invalid_kdl_reports_a_location() {
+        let err = parse_err("default-task \"t\"\ntasks {\n    task \"t\" {\n");
+        assert!(err.starts_with("cfg.kdl:"), "{err}");
     }
 
     #[test]

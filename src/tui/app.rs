@@ -119,7 +119,7 @@ impl App {
     pub fn reload(&mut self) {
         if let Ok(content) = std::fs::read_to_string(&self.config_path) {
             if let Ok(config) =
-                knuffel::parse::<BackupConfig>(&self.config_path, &content)
+                BackupConfig::parse(&self.config_path, &content)
             {
                 let prev_task = self.selected_task;
                 let prev_remote = self.selected_remote;

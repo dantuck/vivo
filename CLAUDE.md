@@ -29,7 +29,7 @@ Vivo is a CLI wrapper around `restic` that orchestrates backups with sync to mul
 9. `src/remote_setup.rs` — guided setup shared by `vivo init`, `vivo remote add|test`, and the TUI: `prompt_new_remote`, `guided_add`, `test_remote` (RustFS → bucket check/create; `s3:` → `restic snapshots` + offer `restic init`; B2 → `doctor` connectivity check)
 10. `src/step.rs` — `Step` enum (Backup < Check < Forget < Sync) with `PartialOrd` for `--start-step` gating
 
-**Config format:** KDL (via `knuffel` crate). Backup config defaults to `~/.config/vivo/backup.kdl` (override via `VIVO_BACKUP_CONFIG` env var or `-c` flag). Secrets default to `~/.config/vivo/secrets.yaml` (override via `VIVO_BACKUP_SECRETS`). Secrets must be SOPS/age-encrypted YAML.
+**Config format:** KDL (decoded from the `kdl` crate by `src/backup_config/kdl_decode.rs`; reads KDL v2 and falls back to v1). Backup config defaults to `~/.config/vivo/backup.kdl` (override via `VIVO_BACKUP_CONFIG` env var or `-c` flag). Secrets default to `~/.config/vivo/secrets.yaml` (override via `VIVO_BACKUP_SECRETS`). Secrets must be SOPS/age-encrypted YAML.
 
 **Secrets format:**
 ```yaml

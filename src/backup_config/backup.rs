@@ -7,50 +7,103 @@ use std::sync::OnceLock;
 use regex::Regex;
 use std::env;
 
+use kdl::KdlNode;
+
+use crate::backup_config::kdl_decode::{named, ConfigError, Source};
 use crate::config::VivoConfig;
 use crate::step::Step;
 use crate::ui;
 
-#[derive(knuffel::Decode, Debug)]
+#[derive(Debug)]
 pub struct Remote {
-    #[knuffel(argument)]
     pub url: String,
-    #[knuffel(child, unwrap(argument))]
     pub credentials: String,
-    #[knuffel(child, unwrap(argument))]
     pub mc_max_workers: Option<u32>,
-    #[knuffel(child, unwrap(argument))]
     pub mc_limit_upload: Option<String>,
 }
 
-#[derive(knuffel::Decode, Debug)]
+impl Remote {
+    pub(crate) fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
+        let children = src.children(node);
+        src.only(children, &["credentials", "mc-max-workers", "mc-limit-upload"])?;
+        Ok(Remote {
+            url: src.argument(node)?,
+            credentials: src.string_value(src.required(node, children, "credentials")?)?,
+            mc_max_workers: src
+                .optional(children, "mc-max-workers")?
+                .map(|n| src.int_value(n))
+                .transpose()?,
+            mc_limit_upload: src
+                .optional(children, "mc-limit-upload")?
+                .map(|n| src.string_value(n))
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct Backup {
-    #[knuffel(child, unwrap(argument))]
     repo: String,
-    #[knuffel(child, unwrap(argument))]
     exclude_file: Option<String>,
-    #[knuffel(child, unwrap(argument))]
     directory: Option<String>,
-    #[knuffel(child, unwrap(argument))]
     files_from: Option<String>,
-    #[knuffel(children(name = "remote"))]
     remotes: Vec<Remote>,
-    #[knuffel(child)]
     retention: Option<BackupRetention>,
-    #[knuffel(child, unwrap(argument))]
     dry_run: Option<bool>,
 }
 
-#[derive(knuffel::Decode, Debug)]
+impl Backup {
+    pub(crate) fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
+        let children = src.children(node);
+        src.only(
+            children,
+            &["repo", "exclude-file", "directory", "files-from", "remote", "retention", "dry-run"],
+        )?;
+        let string = |name: &str| -> Result<Option<String>, ConfigError> {
+            src.optional(children, name)?.map(|n| src.string_value(n)).transpose()
+        };
+        Ok(Backup {
+            repo: src.string_value(src.required(node, children, "repo")?)?,
+            exclude_file: string("exclude-file")?,
+            directory: string("directory")?,
+            files_from: string("files-from")?,
+            remotes: named(children, "remote")
+                .map(|n| Remote::decode(src, n))
+                .collect::<Result<_, _>>()?,
+            retention: src
+                .optional(children, "retention")?
+                .map(|n| BackupRetention::decode(src, n))
+                .transpose()?,
+            dry_run: src
+                .optional(children, "dry-run")?
+                .map(|n| src.bool_value(n))
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct BackupRetention {
-    #[knuffel(child, unwrap(argument))]
     daily: Option<i16>,
-    #[knuffel(child, unwrap(argument))]
     weekly: Option<i16>,
-    #[knuffel(child, unwrap(argument))]
     monthly: Option<i16>,
-    #[knuffel(child, unwrap(argument))]
     yearly: Option<i16>,
+}
+
+impl BackupRetention {
+    fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
+        let children = src.children(node);
+        src.only(children, &["daily", "weekly", "monthly", "yearly"])?;
+        let count = |name: &str| -> Result<Option<i16>, ConfigError> {
+            src.optional(children, name)?.map(|n| src.int_value(n)).transpose()
+        };
+        Ok(BackupRetention {
+            daily: count("daily")?,
+            weekly: count("weekly")?,
+            monthly: count("monthly")?,
+            yearly: count("yearly")?,
+        })
+    }
 }
 
 static ENV_VAR_RE: OnceLock<Regex> = OnceLock::new();
@@ -317,7 +370,7 @@ tasks {
     }
 }
 "#;
-        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let cfg = BackupConfig::parse("test", src).unwrap();
         let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
         assert_eq!(remote.mc_max_workers, Some(2));
         assert_eq!(remote.mc_limit_upload, None);
@@ -339,7 +392,7 @@ tasks {
     }
 }
 "#;
-        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let cfg = BackupConfig::parse("test", src).unwrap();
         let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
         assert_eq!(remote.mc_max_workers, None);
         assert_eq!(remote.mc_limit_upload.as_deref(), Some("5MiB"));
@@ -362,7 +415,7 @@ tasks {
     }
 }
 "#;
-        let cfg = knuffel::parse::<BackupConfig>("test", src).unwrap();
+        let cfg = BackupConfig::parse("test", src).unwrap();
         let remote = &cfg.tasks[0].backup().unwrap().remotes[0];
         assert_eq!(remote.mc_max_workers, Some(1));
         assert_eq!(remote.mc_limit_upload.as_deref(), Some("10MiB"));
