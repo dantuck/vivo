@@ -2,34 +2,54 @@ use std::collections::{HashMap, HashSet};
 
 use log::info;
 
+use kdl::KdlNode;
+
 use crate::backup_config::backup::Backup;
+use crate::backup_config::kdl_decode::{named, ConfigError, Source};
 use crate::config::VivoConfig;
 use crate::ui;
 
-#[derive(knuffel::Decode, Debug)]
+#[derive(Debug)]
 pub struct Task {
-    #[knuffel(argument)]
     pub name: String,
-    #[knuffel(child, unwrap(argument))]
     description: Option<String>,
-    #[knuffel(child)]
     backup: Option<Backup>,
-    #[knuffel(children(name = "command"))]
     commands: Vec<CommandItem>,
-    #[knuffel(children(name = "calls"))]
     calls: Vec<CallRef>,
 }
 
-#[derive(knuffel::Decode, Debug)]
+#[derive(Debug)]
 struct CommandItem {
-    #[knuffel(argument)]
     cmd: String,
 }
 
-#[derive(knuffel::Decode, Debug)]
+#[derive(Debug)]
 struct CallRef {
-    #[knuffel(argument)]
     name: String,
+}
+
+impl Task {
+    pub(crate) fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
+        let children = src.children(node);
+        src.only(children, &["description", "backup", "command", "calls"])?;
+        Ok(Task {
+            name: src.argument(node)?,
+            description: src
+                .optional(children, "description")?
+                .map(|n| src.string_value(n))
+                .transpose()?,
+            backup: src
+                .optional(children, "backup")?
+                .map(|n| Backup::decode(src, n))
+                .transpose()?,
+            commands: named(children, "command")
+                .map(|n| src.leaf_argument(n).map(|cmd| CommandItem { cmd }))
+                .collect::<Result<_, _>>()?,
+            calls: named(children, "calls")
+                .map(|n| src.leaf_argument(n).map(|name| CallRef { name }))
+                .collect::<Result<_, _>>()?,
+        })
+    }
 }
 
 fn run_command(cmd: &str) {
