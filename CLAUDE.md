@@ -23,10 +23,11 @@ Vivo is a CLI wrapper around `restic` that orchestrates backups with sync to mul
 3. `src/backup_config/mod.rs` — loads KDL config; decrypts secrets via `sops -d`; sets `RESTIC_PASSWORD` env var; returns `(BackupConfig, Secrets)` tuple
 4. `src/backup_config/task.rs` — `Task` execution with `calls` (named task references) and `commands` (shell commands); circular-reference detection
 5. `src/backup_config/backup.rs` — runs `restic backup → restic check → restic forget → sync remotes` in sequence; each step gated by `config.start_step`
-6. `src/remote/mod.rs` — `RemoteBackend` trait + `from_url()` factory dispatching on URL prefix (`b2:`, `s3:`)
+6. `src/remote/mod.rs` — `RemoteBackend` trait + `from_url()` factory dispatching on URL prefix (`b2:`, `s3:`, `rustfs:`)
 7. `src/remote/b2.rs` — B2Backend: uses `b2 sync --delete --replace-newer --compare-versions size`
-8. `src/remote/s3.rs` — S3Backend: uses `restic copy --repo <local> --to <url>` (handles rustfs, AWS S3, etc.)
-9. `src/step.rs` — `Step` enum (Backup < Check < Forget < Sync) with `PartialOrd` for `--start-step` gating
+8. `src/remote/s3.rs` — S3Backend: uses `restic copy --repo <local> --to <url>` (AWS S3, MinIO, etc.). `src/remote/rustfs.rs` — RustfsBackend (`rustfs:https://host/bucket[/path]`): mirrors the local repo with `mc`/`aws`/`rclone`; the bucket is created on sync and no remote `restic init` is needed
+9. `src/remote_setup.rs` — guided setup shared by `vivo init`, `vivo remote add|test`, and the TUI: `prompt_new_remote`, `guided_add`, `test_remote` (RustFS → bucket check/create; `s3:` → `restic snapshots` + offer `restic init`; B2 → `doctor` connectivity check)
+10. `src/step.rs` — `Step` enum (Backup < Check < Forget < Sync) with `PartialOrd` for `--start-step` gating
 
 **Config format:** KDL (via `knuffel` crate). Backup config defaults to `~/.config/vivo/backup.kdl` (override via `VIVO_BACKUP_CONFIG` env var or `-c` flag). Secrets default to `~/.config/vivo/secrets.yaml` (override via `VIVO_BACKUP_SECRETS`). Secrets must be SOPS/age-encrypted YAML.
 
@@ -67,9 +68,10 @@ tasks {
 **`--start-step` / `-S`:** Skips earlier steps. Valid values: `backup`, `check`, `forget`, `sync`.
 
 **Subcommands:**
-- `vivo init` — checks prerequisites (restic, sops, age key) and bootstraps config/secrets files
+- `vivo init` — checks prerequisites (restic, sops, age key) and bootstraps config/secrets files; on a TTY: offers to install tools and create the age key, asks what to back up, sets the restic password, adds and tests a first remote, and offers a first backup. `vivo` refuses to run with the `change-me` placeholder password, and exits non-zero when a backup or remote sync fails
 - `vivo config {init,edit,show}` — manage the KDL backup config file
-- `vivo secrets {init,edit,show}` — manage the SOPS-encrypted secrets file
+- `vivo secrets {init,edit,show,import-b2,import-s3}` — manage the SOPS-encrypted secrets file
+- `vivo remote {add,list,test,remove}` — `add` is guided on a TTY when `--url`/`--credentials` are omitted; `test` checks every remote (or `--task`)
 - `vivo manage` — full-screen TUI config manager (see below)
 - `vivo mount [path]` — mount a backup repo as a FUSE filesystem
 

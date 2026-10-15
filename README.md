@@ -54,15 +54,83 @@ cp target/release/vivo /usr/local/bin/
 vivo init
 ```
 
-`vivo init` checks that prerequisites are installed, creates a starter config at `~/.config/vivo/backup.kdl`, and creates an encrypted secrets file at `~/.config/vivo/secrets.yaml`.
+`vivo init` is a guided setup. On a terminal it walks through:
 
-After init:
+1. **Prerequisites** — checks for `restic`, `sops` and an `age` key. With Homebrew it offers to install anything missing, and it offers to create the age key for you. (Keep a copy of that key; without it your secrets can't be decrypted.)
+2. **What to back up** — the directory and where the local restic repository lives. It warns before backing up your whole home directory and if the directory doesn't exist.
+3. **Restic password** — prompted and saved to the encrypted secrets file. vivo refuses to back up while it is still the `change-me` placeholder, so a repo can never be created with it.
+4. **Off-site remote** — pick RustFS, S3, or Backblaze B2, enter a validated URL, and choose or create a credentials profile (keys are stored encrypted). The remote is tested right away; for RustFS vivo offers to create a missing bucket, and for `s3:` it offers `restic init`.
+5. **First backup** — a dry-run preview, then an offer to run the real backup.
+
+Not on a terminal (CI, piped input)? `init` writes a static starter config instead and prompts for nothing. Each step is also available on its own:
 
 ```sh
-vivo config edit    # set your repo path, directories, and remotes
-vivo secrets edit   # set your restic password and remote credentials
-vivo --dry-run      # test the backup without making changes
+vivo remote add     # guided: backend, URL, credentials, then a connection test
+vivo remote test    # re-test every configured remote (or --task NAME)
+vivo doctor         # check tools, config, secrets, and remote connectivity
+vivo --dry-run      # preview the backup without changing anything
 vivo                # run the backup
+```
+
+vivo exits non-zero if the backup fails or any remote fails to sync, so schedulers can alert on it.
+
+## Scheduling
+
+vivo runs once and exits; schedule it to back up automatically. Use the full path to `vivo` (`which vivo`) and `vivo --dry-run` first to confirm it works non-interactively. Scheduled jobs don't get your shell's `PATH`, so make sure `restic`, `sops`, and any sync tool (`mc`, `b2`) are findable — the examples below set it.
+
+### macOS (launchd)
+
+Save as `~/Library/LaunchAgents/dev.vivo.backup.plist` (change the path, and add `/opt/homebrew/bin` if you installed tools with Homebrew), then run `launchctl load ~/Library/LaunchAgents/dev.vivo.backup.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.vivo.backup</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/vivo</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/vivo.log</string>
+  <key>StandardErrorPath</key><string>/tmp/vivo.log</string>
+</dict>
+</plist>
+```
+
+### Linux (systemd user timer)
+
+`~/.config/systemd/user/vivo.service`:
+
+```ini
+[Unit]
+Description=vivo backup
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/vivo
+```
+
+`~/.config/systemd/user/vivo.timer`:
+
+```ini
+[Unit]
+Description=Daily vivo backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with `systemctl --user enable --now vivo.timer`. A failed run shows in `systemctl --user status vivo.service`.
+
+### cron
+
+```cron
+0 2 * * * PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin /usr/local/bin/vivo >> $HOME/vivo.log 2>&1
 ```
 
 ## Usage
@@ -100,7 +168,7 @@ vivo config show    # Print config to stdout
 ```
 vivo secrets init   # Create and encrypt ~/.config/vivo/secrets.yaml
 vivo secrets edit   # Edit secrets with sops
-vivo secrets show   # Decrypt and print secrets to stdout
+vivo secrets show   # Print secrets with values masked
 ```
 
 ### Interactive TUI
@@ -219,7 +287,26 @@ Each key under `credentials` is a named profile. The `credentials` field on a `r
 
 ## Remote Backends
 
-### S3-compatible (AWS S3, rustfs, MinIO, etc.)
+### RustFS (and other S3-compatible servers via file sync)
+
+Mirrors the local restic repository into a bucket using `mc` (preferred), `aws`, or `rclone`. URL format: `rustfs:<scheme>://<host>/<bucket>[/<path>]`
+
+```kdl
+remote "rustfs:https://rustfs.example.com/my-bucket" {
+    credentials "rustfs"
+}
+```
+
+The credentials profile needs `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Create one with `vivo remote add` (guided) or non-interactively:
+
+```sh
+vivo secrets import-s3 --profile rustfs --key-id <ACCESS_KEY> --key <SECRET_KEY>
+vivo remote add --task backup --url rustfs:https://rustfs.example.com/my-bucket --credentials rustfs
+```
+
+The bucket is created on first sync (or earlier, by `vivo remote add` / `vivo remote test`), and no `restic init` is needed on the remote — the sync copies the local repository as-is. Test it any time with `vivo remote test`.
+
+### S3-compatible (AWS S3, MinIO, etc.)
 
 Uses `restic copy`. URL format: `s3:<endpoint>/<bucket>`
 
@@ -227,12 +314,12 @@ Uses `restic copy`. URL format: `s3:<endpoint>/<bucket>`
 remote "s3:https://s3.amazonaws.com/my-bucket" {
     credentials "aws"
 }
-remote "s3:http://rustfs.local:9000/backup" {
-    credentials "rustfs"
+remote "s3:http://minio.local:9000/backup" {
+    credentials "minio"
 }
 ```
 
-The remote restic repository must be initialized before first sync:
+The remote restic repository must be initialized before first sync. `vivo remote add` and `vivo remote test` offer to do this for you, or run it yourself:
 
 ```sh
 restic init --repo s3:https://s3.amazonaws.com/my-bucket
