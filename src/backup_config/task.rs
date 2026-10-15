@@ -47,20 +47,25 @@ fn run_call(
     config: &VivoConfig,
     tasks: &[Task],
     credentials: &HashMap<String, HashMap<String, String>>,
-) {
+) -> bool {
     if seen.contains(name) {
         eprintln!("warning: circular reference detected, skipping task '{name}'");
-        return;
+        return true;
     }
     seen.insert(name.to_string());
-    match tasks.iter().find(|t| t.name == name) {
+    let ok = match tasks.iter().find(|t| t.name == name) {
         Some(task) => {
-            task.run_inner(config, tasks, credentials, seen);
-            ui::info(&format!("Task [{name}] completed."));
+            let ok = task.run_inner(config, tasks, credentials, seen);
+            ui::info(&format!("Task [{name}] {}.", if ok { "completed" } else { "finished with errors" }));
+            ok
         }
-        None => eprintln!("error: task '{name}' not found"),
-    }
+        None => {
+            eprintln!("error: task '{name}' not found");
+            false
+        }
+    };
     seen.remove(name);
+    ok
 }
 
 impl Task {
@@ -111,10 +116,10 @@ impl Task {
         config: &VivoConfig,
         tasks: &[Task],
         credentials: &HashMap<String, HashMap<String, String>>,
-    ) {
+    ) -> bool {
         // Seed seen with self so any call chain that loops back to the root is caught.
         let mut seen = HashSet::from([self.name.clone()]);
-        self.run_inner(config, tasks, credentials, &mut seen);
+        self.run_inner(config, tasks, credentials, &mut seen)
     }
 
     fn run_inner(
@@ -123,7 +128,8 @@ impl Task {
         tasks: &[Task],
         credentials: &HashMap<String, HashMap<String, String>>,
         seen: &mut HashSet<String>,
-    ) {
+    ) -> bool {
+        let mut ok = true;
         info!("Running task [{}]", self.name);
         ui::section_header(&format!("Running task [{}]", self.name));
 
@@ -132,9 +138,16 @@ impl Task {
         }
 
         if let Some(backup) = &self.backup {
-            if let Err(e) = backup.run(config, credentials) {
-                eprintln!("error: {e}");
-                return;
+            match backup.run(config, credentials) {
+                Ok(0) => {}
+                Ok(failed_syncs) => {
+                    eprintln!("error: {failed_syncs} remote sync(s) failed");
+                    ok = false;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return false;
+                }
             }
         }
 
@@ -143,7 +156,8 @@ impl Task {
         }
 
         for call in &self.calls {
-            run_call(&call.name, seen, config, tasks, credentials);
+            ok &= run_call(&call.name, seen, config, tasks, credentials);
         }
+        ok
     }
 }

@@ -302,6 +302,25 @@ pub fn edit_task(kdl: &str, old_name: &str, spec: EditTaskSpec) -> Result<String
     Ok(doc.to_string())
 }
 
+/// Names of tasks that have a `backup` block (the only tasks a remote can be added to).
+pub fn backup_task_names(kdl: &str) -> Result<Vec<String>, String> {
+    let doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let tasks = doc
+        .get("tasks")
+        .and_then(|n| n.children())
+        .ok_or("config missing 'tasks' block")?;
+    Ok(tasks
+        .nodes()
+        .iter()
+        .filter(|n| n.name().value() == "task")
+        .filter(|n| {
+            n.children()
+                .is_some_and(|c| c.nodes().iter().any(|b| b.name().value() == "backup"))
+        })
+        .filter_map(|n| first_arg(n).map(String::from))
+        .collect())
+}
+
 pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String, String> {
     let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
 
@@ -558,6 +577,23 @@ tasks {
     }
 }
 "#;
+
+    #[test]
+    fn backup_task_names_skips_calls_only_tasks() {
+        let kdl = r#"default-task "all"
+tasks {
+    task "docs" {
+        backup {
+            repo "/tmp/docs"
+        }
+    }
+    task "all" {
+        calls "docs"
+    }
+}
+"#;
+        assert_eq!(backup_task_names(kdl).unwrap(), vec!["docs".to_string()]);
+    }
 
     #[test]
     fn add_task_appends_new_task() {

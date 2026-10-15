@@ -6,6 +6,14 @@ use vivo::{
     import_b2_credentials, secrets_path_from, BackupConfig, VivoConfig,
 };
 
+/// Unwraps `r`, or prints `error: <e>` and exits with status 1.
+fn or_exit<T, E: std::fmt::Display>(r: Result<T, E>) -> T {
+    r.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        process::exit(1)
+    })
+}
+
 fn ensure_path(path: &str) {
     let expanded = expand_env_vars(path);
     if !expanded.is_empty() {
@@ -54,7 +62,12 @@ tasks {{
 /// once a task exists.
 const SKELETON_CONFIG_TEMPLATE: &str = "default-task \"\"\n\ntasks {\n}\n";
 
-const SECRETS_TEMPLATE: &str = "restic_password: \"change-me\"\ncredentials: {}\n";
+fn secrets_template() -> String {
+    format!(
+        "restic_password: \"{}\"\ncredentials: {{}}\n",
+        vivo::backup_config::PLACEHOLDER_PASSWORD
+    )
+}
 
 const EXCLUDES_TEMPLATE: &str = "\
 .DS_Store
@@ -128,9 +141,16 @@ fn create_with_template(path: &str, contents: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Exits cleanly when the user presses Esc/Ctrl-C in a setup prompt.
+fn cancel_setup() -> ! {
+    println!("\nSetup cancelled before the backup config was written. Re-run `vivo init` to continue.");
+    process::exit(0)
+}
+
 /// Guides the user through creating their first backup task interactively:
-/// what to back up, where the restic repo lives, and (optionally) a remote
-/// sync destination. Falls back to the static template when stdin isn't a
+/// what to back up and where the restic repo lives. Remotes come later in
+/// `cmd_init`, once the secrets exist, so they can get credentials and a
+/// connection test. Falls back to the static template when stdin isn't a
 /// TTY. Returns true on success (including "already existed").
 fn cmd_config_init_interactive(config_path: &str) -> bool {
     if Path::new(config_path).exists() {
@@ -144,49 +164,36 @@ fn cmd_config_init_interactive(config_path: &str) -> bool {
 
     println!("Let's set up your first backup.\n");
 
-    let directory = inquire::Text::new("Which directory would you like to back up?")
-        .with_default("$HOME")
-        .prompt()
-        .unwrap_or_else(|_| process::exit(0));
+    let home = expand_env_vars("$HOME");
+    let directory = loop {
+        let input = inquire::Text::new("Which directory would you like to back up?")
+            .with_default("$HOME")
+            .with_help_message("Add more later with `vivo task add`")
+            .prompt()
+            .unwrap_or_else(|_| cancel_setup());
+        let dir = input.trim();
+        let expanded = expand_env_vars(dir);
+        if expanded == home {
+            println!(
+                "  Backing up your whole home directory; common junk is skipped via {DEFAULT_EXCLUDES_PATH}."
+            );
+        } else if !Path::new(&expanded).is_dir() {
+            let keep = inquire::Confirm::new(&format!("'{expanded}' does not exist. Use it anyway?"))
+                .with_default(false)
+                .prompt()
+                .unwrap_or_else(|_| cancel_setup());
+            if !keep {
+                continue;
+            }
+        }
+        break dir.to_string();
+    };
 
     let repo = inquire::Text::new("Where should the restic repository be stored?")
         .with_default("$HOME/.local/share/restic/main")
+        .with_help_message("A local copy of your backups; remotes (next) are off-site copies of it")
         .prompt()
-        .unwrap_or_else(|_| process::exit(0));
-
-    let add_remote = inquire::Confirm::new("Add a remote sync destination now?")
-        .with_default(false)
-        .with_help_message("You can always add one later with `vivo remote add`")
-        .prompt()
-        .unwrap_or(false);
-
-    let remote = if add_remote {
-        let remote_type = inquire::Select::new(
-            "Remote type:",
-            vec!["S3-compatible (s3:)", "Backblaze B2 (b2:)", "RustFS/custom (rustfs:)"],
-        )
-        .prompt()
-        .unwrap_or_else(|_| process::exit(0));
-
-        let (default_url, default_creds) = match remote_type {
-            "S3-compatible (s3:)" => ("s3:https://s3.amazonaws.com/my-bucket", "aws"),
-            "Backblaze B2 (b2:)" => ("b2:my-bucket:restic/main", "b2"),
-            _ => ("rustfs:http://your-nas:9000/backup", "rustfs"),
-        };
-
-        let url = inquire::Text::new("Remote URL:")
-            .with_default(default_url)
-            .prompt()
-            .unwrap_or_else(|_| process::exit(0));
-        let credentials = inquire::Text::new("Credentials profile name:")
-            .with_default(default_creds)
-            .prompt()
-            .unwrap_or_else(|_| process::exit(0));
-
-        Some((url, credentials))
-    } else {
-        None
-    };
+        .unwrap_or_else(|_| cancel_setup());
 
     if let Err(e) = create_with_template(config_path, SKELETON_CONFIG_TEMPLATE) {
         eprintln!("error: {e}");
@@ -212,20 +219,6 @@ fn cmd_config_init_interactive(config_path: &str) -> bool {
                 exclude_file: Some(DEFAULT_EXCLUDES_PATH.to_string()),
             },
         )?;
-        let kdl = if let Some((url, credentials)) = &remote {
-            vivo::add_remote(
-                &kdl,
-                task_name,
-                vivo::RemoteSpec {
-                    url: url.clone(),
-                    credentials: credentials.clone(),
-                    mc_max_workers: None,
-                    mc_limit_upload: None,
-                },
-            )?
-        } else {
-            kdl
-        };
         vivo::set_default_task(&kdl, task_name)
     };
 
@@ -306,7 +299,7 @@ fn cmd_secrets_init(secrets_path: &str) -> bool {
     };
 
     let tmp_path = env::temp_dir().join("vivo-secrets-init.tmp");
-    if let Err(e) = fs::write(&tmp_path, SECRETS_TEMPLATE) {
+    if let Err(e) = fs::write(&tmp_path, secrets_template()) {
         eprintln!("error: could not write secrets template: {e}");
         return false;
     }
@@ -391,34 +384,135 @@ fn cmd_secrets_edit(secrets_path: &str) {
 }
 
 fn cmd_secrets_show(secrets_path: &str) {
-    match decrypt_sops_file(secrets_path) {
-        Ok(contents) => print!("{contents}"),
+    let masked = decrypt_sops_file(secrets_path)
+        .and_then(|contents| vivo::backup_config::mask_secrets_yaml(&contents));
+    match masked {
+        Ok(masked) => print!("{masked}"),
         Err(e) => eprintln!("error: {e}"),
     }
 }
 
-/// Runs the full guided setup: prerequisite checks, then config/secrets
-/// creation. Returns true only if every step succeeded.
+/// Offers to create the age key `sops` encrypts vivo's secrets with.
+/// Returns true if a key was created.
+fn maybe_create_age_key() -> bool {
+    let path = vivo::age_keys_path();
+    println!("\nvivo encrypts your secrets with an age key, and none exists yet.");
+    let create = inquire::Confirm::new(&format!("Create one at {path}?"))
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+    if !create {
+        return false;
+    }
+    match vivo::doctor::generate_age_key(&path) {
+        Ok(()) => {
+            println!("\nBack up {path} somewhere safe — without it your secrets can't be decrypted.\n");
+            true
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
+    }
+}
+
+/// Checks restic, sops and the age key. On a terminal it offers to install
+/// missing tools with Homebrew and to create the age key. Returns false if
+/// something required is still missing.
+fn ensure_prerequisites(interactive: bool) -> bool {
+    use vivo::doctor::{check_age_key, check_tool_present, print_result, CheckResult, CheckStatus};
+
+    let failed = |r: &CheckResult| matches!(r.status, CheckStatus::Fail);
+    let probe = || {
+        [
+            check_tool_present("restic", "version", "install from https://restic.net"),
+            check_tool_present("sops", "--version", "install from https://github.com/getsops/sops"),
+            check_tool_present("age-keygen", "--version", "install from https://age-encryption.org"),
+            check_age_key(),
+        ]
+    };
+    let mut checks = probe();
+
+    if interactive {
+        let [restic, sops, age_cli, key] = &checks;
+        let packages: Vec<&str> = [
+            ("restic", failed(restic)),
+            ("sops", failed(sops)),
+            ("age", failed(key) && failed(age_cli)),
+        ]
+        .into_iter()
+        .filter_map(|(pkg, missing)| missing.then_some(pkg))
+        .collect();
+
+        if !packages.is_empty() {
+            for r in [restic, sops].into_iter().filter(|r| failed(r)) {
+                print_result(r);
+            }
+            match vivo::doctor::fix_core_tools(&packages) {
+                Ok(true) => checks = probe(),
+                Ok(false) => {}
+                Err(e) => eprintln!("error: {e}"),
+            }
+        }
+
+        let [_, _, age_cli, key] = &checks;
+        if failed(key) && !failed(age_cli) && maybe_create_age_key() {
+            checks[3] = check_age_key();
+        }
+    }
+
+    let [restic, sops, _, key] = &checks;
+    for r in [restic, sops, key] {
+        print_result(r);
+    }
+    if [restic, sops, key].into_iter().any(failed) {
+        eprintln!("\nInstall missing prerequisites and re-run `vivo init`.");
+        return false;
+    }
+    true
+}
+
+/// A run of the default task against `config_path`, as `vivo` would do with no arguments.
+fn first_backup_config(config_path: &str, dry_run: bool) -> VivoConfig {
+    VivoConfig {
+        task_name: None,
+        config_file: Some(std::path::PathBuf::from(config_path)),
+        dry_run,
+        start_step: Default::default(),
+    }
+}
+
+/// Offers a dry run, then the first real backup. Returns true if the real backup ran and succeeded.
+fn offer_first_backup(config_path: &str, secrets_path: &str) -> bool {
+    println!();
+    let preview = inquire::Confirm::new("Preview your first backup with a dry run?")
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+    if !preview {
+        return false;
+    }
+    println!();
+    run_backup(&first_backup_config(config_path, true), config_path, secrets_path);
+
+    println!();
+    let run = inquire::Confirm::new("Run the first real backup now?")
+        .with_default(false)
+        .with_help_message("Large directories can take a while; you can also run `vivo` later")
+        .prompt()
+        .unwrap_or(false);
+    run && run_backup(&first_backup_config(config_path, false), config_path, secrets_path)
+}
+
+/// Runs the full guided setup: prerequisites, what to back up, the restic
+/// password, an off-site remote, and a first backup. Returns true only if
+/// every required step succeeded.
 fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
     vivo::ui::print_banner();
     println!("Checking prerequisites...");
 
-    let checks = [
-        vivo::doctor::check_tool_present("restic", "version", "install from https://restic.net"),
-        vivo::doctor::check_tool_present("sops", "--version", "install from https://github.com/getsops/sops"),
-        vivo::doctor::check_age_key(),
-    ];
-
-    let mut ok = true;
-    for r in &checks {
-        vivo::doctor::print_result(r);
-        if matches!(r.status, vivo::doctor::CheckStatus::Fail) {
-            ok = false;
-        }
-    }
-
-    if !ok {
-        eprintln!("\nInstall missing prerequisites and re-run `vivo init`.");
+    let interactive = std::io::stdin().is_terminal();
+    if !ensure_prerequisites(interactive) {
         return false;
     }
 
@@ -445,12 +539,90 @@ fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
         return false;
     }
 
+    let (mut password_set, mut remote_added, mut backed_up) = (false, false, false);
+    if interactive {
+        println!();
+        password_set = setup_restic_password(secrets_path);
+        // Remotes and the first backup need the real password, so they wait for it.
+        if password_set {
+            remote_added = offer_first_remote(config_path, secrets_path);
+            backed_up = offer_first_backup(config_path, secrets_path);
+        }
+    }
+
     println!();
     println!("Setup complete. Next steps:");
-    println!("  1. Edit your backup config:  vivo config edit");
-    println!("  2. Set your restic password: vivo secrets edit");
-    println!("  3. Run a dry-run backup:     vivo --dry-run");
+    let mut steps = vec![];
+    if !password_set {
+        steps.push("Set your restic password:   vivo secrets edit");
+    }
+    if !remote_added {
+        steps.push("Add an off-site remote:     vivo remote add  (RustFS, S3 or B2)");
+    }
+    if !backed_up {
+        steps.push("Run your first backup:      vivo  (preview first with: vivo --dry-run)");
+    }
+    steps.push("Run it on a schedule:       see \"Scheduling\" in the README (launchd, cron, systemd)");
+    steps.push("Check everything:           vivo doctor");
+    for (i, step) in steps.iter().enumerate() {
+        println!("  {}. {step}", i + 1);
+    }
+    println!(
+        "\nKeep copies of your restic password and your age key ({}) — backups can't be restored without them.",
+        vivo::age_keys_path()
+    );
     true
+}
+
+/// Prompts for the restic repository password if the secrets file still has
+/// the placeholder. Returns true if a real password is set afterwards.
+fn setup_restic_password(secrets_path: &str) -> bool {
+    let Some(secrets) = decrypt_sops_file(secrets_path)
+        .ok()
+        .and_then(|d| vivo::parse_secrets(&d).ok())
+    else {
+        return false;
+    };
+    if !vivo::backup_config::is_placeholder_password(&secrets.restic_password) {
+        return true;
+    }
+
+    let password = match inquire::Password::new("Restic repository password:")
+        .with_help_message("Encrypts your backups. Keep a copy somewhere safe — it can't be recovered.")
+        .prompt()
+    {
+        Ok(p) if !p.is_empty() => p,
+        _ => return false,
+    };
+    match vivo::set_restic_password(secrets_path, &password) {
+        Ok(()) => {
+            println!("Saved restic password to {secrets_path}");
+            true
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
+    }
+}
+
+/// Offers to add a first remote right after init. Returns true if one was added.
+fn offer_first_remote(config_path: &str, secrets_path: &str) -> bool {
+    println!();
+    let wanted = inquire::Confirm::new("Add an off-site remote now (RustFS, S3, or B2)?")
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+    if !wanted {
+        return false;
+    }
+    match vivo::remote_setup::guided_add(config_path, secrets_path, None) {
+        Ok(added) => added.is_some(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
+    }
 }
 
 /// Reacts to a `LoadConfigError`: guides the user through a fix when stdin
@@ -503,7 +675,23 @@ fn handle_load_error(err: &vivo::LoadConfigError, config_path: &str, secrets_pat
                 process::exit(1);
             }
         }
-        vivo::LoadConfigError::Other(msg) => eprintln!("error: {msg}"),
+        vivo::LoadConfigError::PasswordNotSet { .. } => {
+            if interactive {
+                println!("Your restic password is still the placeholder — set it before the first backup.\n");
+                if setup_restic_password(secrets_path) {
+                    println!("\nRe-run `vivo` to start your backup.");
+                } else {
+                    process::exit(1);
+                }
+            } else {
+                eprintln!("error: {err}");
+                process::exit(1);
+            }
+        }
+        vivo::LoadConfigError::Other(msg) => {
+            eprintln!("error: {msg}");
+            process::exit(1);
+        }
     }
 }
 
@@ -636,20 +824,7 @@ fn cmd_task_add(config_path: &str, matches: &clap::ArgMatches) {
 }
 
 fn cmd_task_list(config_path: &str) {
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: could not read config '{config_path}': {e}");
-            process::exit(1);
-        }
-    };
-    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
+    let config = or_exit(vivo::BackupConfig::from_file(config_path));
 
     for task in &config.tasks {
         if let Some(desc) = task.description() {
@@ -676,13 +851,7 @@ fn cmd_task_remove(config_path: &str, matches: &clap::ArgMatches) {
         }
     }
 
-    let kdl = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
+    let kdl = or_exit(fs::read_to_string(config_path));
 
     match vivo::remove_task(&kdl, &name) {
         Ok(new_kdl) => {
@@ -699,8 +868,25 @@ fn cmd_task_remove(config_path: &str, matches: &clap::ArgMatches) {
     }
 }
 
-fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
+fn cmd_remote_add(config_path: &str, secrets_path: &str, matches: &clap::ArgMatches) {
     let interactive = std::io::stdin().is_terminal();
+
+    // No URL or credentials given on a terminal: walk through the guided flow
+    // (backend, validated URL, credential profile, then a connection test).
+    if interactive
+        && matches.get_one::<String>("url").is_none()
+        && matches.get_one::<String>("credentials").is_none()
+    {
+        if !ensure_onboarded(config_path, secrets_path) {
+            return;
+        }
+        let task = matches.get_one::<String>("task").map(String::as_str);
+        if let Err(e) = vivo::remote_setup::guided_add(config_path, secrets_path, task) {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+        return;
+    }
 
     let task = match matches.get_one::<String>("task") {
         Some(t) => t.clone(),
@@ -709,13 +895,8 @@ fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
             process::exit(1);
         }
         None => {
-            let default_suggestion = fs::read_to_string(config_path)
-                .ok()
-                .and_then(|c| {
-                    knuffel::parse::<vivo::BackupConfig>(config_path, &c)
-                        .ok()
-                        .map(|cfg| cfg.default_task)
-                })
+            let default_suggestion = vivo::BackupConfig::from_file(config_path)
+                .map(|cfg| cfg.default_task)
                 .unwrap_or_default();
 
             inquire::Text::new("Task name:")
@@ -731,6 +912,7 @@ fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
         "Remote URL (e.g. rustfs:http://nas:9000/bucket):",
         interactive,
     );
+    or_exit(vivo::remote_setup::validate_url(&url));
     let credentials = require_or_prompt(
         matches,
         "credentials",
@@ -746,7 +928,7 @@ fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
         }
     };
 
-    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials, mc_max_workers: None, mc_limit_upload: None }) {
+    match vivo::add_remote(&kdl, &task, vivo::RemoteSpec { url: url.clone(), credentials: credentials.clone(), mc_max_workers: None, mc_limit_upload: None }) {
         Ok(new_kdl) => {
             if let Err(e) = fs::write(config_path, new_kdl) {
                 eprintln!("error: {e}");
@@ -759,23 +941,48 @@ fn cmd_remote_add(config_path: &str, matches: &clap::ArgMatches) {
             process::exit(1);
         }
     }
+
+    if interactive {
+        vivo::remote_setup::test_after_save(&url, &credentials, secrets_path);
+    }
+}
+
+fn cmd_remote_test(config_path: &str, secrets_path: &str, matches: &clap::ArgMatches) {
+    if !ensure_onboarded(config_path, secrets_path) {
+        process::exit(1);
+    }
+    let config = or_exit(vivo::BackupConfig::from_file(config_path));
+    let secrets = or_exit(vivo::remote_setup::load_secrets(secrets_path));
+
+    let remotes = match matches.get_one::<String>("task") {
+        Some(t) => config.remotes_for_task(t),
+        None => config.all_remotes(),
+    };
+    if remotes.is_empty() {
+        println!("No remotes configured. Add one with `vivo remote add`.");
+        return;
+    }
+
+    let interactive = std::io::stdin().is_terminal();
+    let mut failed = 0;
+    for (url, profile) in &remotes {
+        println!("{url}  (credentials: {profile})");
+        match vivo::remote_setup::test_remote_with_secrets(url, profile, &secrets, interactive) {
+            Ok(msg) => println!("  ok: {msg}\n"),
+            Err(e) => {
+                eprintln!("  failed: {e}\n");
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        eprintln!("{failed} of {} remote(s) failed.", remotes.len());
+        process::exit(1);
+    }
 }
 
 fn cmd_remote_list(config_path: &str, matches: &clap::ArgMatches) {
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
-    let config: vivo::BackupConfig = match knuffel::parse(config_path, &content) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
+    let config = or_exit(vivo::BackupConfig::from_file(config_path));
 
     if let Some(task_filter) = matches.get_one::<String>("task") {
         let remotes = config.remotes_for_task(task_filter);
@@ -833,6 +1040,32 @@ fn cmd_remote_remove(config_path: &str, matches: &clap::ArgMatches) {
         Err(e) => {
             eprintln!("error: {e}");
             process::exit(1);
+        }
+    }
+}
+
+/// Loads config and secrets and runs the selected task. Returns false if the
+/// task, a remote sync, or anything before them failed. Load problems get
+/// guided repair on a terminal and don't count as a failed run.
+fn run_backup(vivo_config: &VivoConfig, config_path: &str, secrets_path: &str) -> bool {
+    match BackupConfig::load_config(vivo_config) {
+        Ok((backup_config, secrets)) => {
+            let task_name = vivo_config
+                .task_name
+                .as_deref()
+                .unwrap_or(&backup_config.default_task);
+
+            match backup_config.tasks.iter().find(|t| t.name == task_name) {
+                Some(task) => task.run(vivo_config, &backup_config.tasks, &secrets.credentials),
+                None => {
+                    eprintln!("error: task '{task_name}' not found in config");
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            handle_load_error(&e, config_path, secrets_path);
+            true
         }
     }
 }
@@ -898,8 +1131,9 @@ fn main() {
         }
         Some(("remote", sub)) => {
             match sub.subcommand() {
-                Some(("add", args)) => cmd_remote_add(&config_path, args),
+                Some(("add", args)) => cmd_remote_add(&config_path, &secrets_path, args),
                 Some(("list", args)) => cmd_remote_list(&config_path, args),
+                Some(("test", args)) => cmd_remote_test(&config_path, &secrets_path, args),
                 Some(("remove", args)) => cmd_remote_remove(&config_path, args),
                 _ => unreachable!(),
             }
@@ -944,22 +1178,14 @@ fn main() {
 
     let update_notice = vivo::update::maybe_check_update();
 
-    match BackupConfig::load_config(&vivo_config) {
-        Ok((backup_config, secrets)) => {
-            let task_name = vivo_config
-                .task_name
-                .as_deref()
-                .unwrap_or(&backup_config.default_task);
-
-            match backup_config.tasks.iter().find(|t| t.name == task_name) {
-                Some(task) => task.run(&vivo_config, &backup_config.tasks, &secrets.credentials),
-                None => eprintln!("error: task '{task_name}' not found in config"),
-            }
-        }
-        Err(e) => handle_load_error(&e, &config_path, &secrets_path),
-    }
+    let ok = run_backup(&vivo_config, &config_path, &secrets_path);
 
     if let Some(ref latest) = update_notice {
         vivo::update::print_update_notice(latest);
+    }
+
+    // Non-zero exit lets cron/launchd/systemd see a failed backup or remote sync.
+    if !ok {
+        process::exit(1);
     }
 }
