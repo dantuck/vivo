@@ -176,18 +176,76 @@ impl RustfsBackend {
         extra
     }
 
-    fn sync_mc(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+    /// Builds the `MC_HOST_vivo-sync` environment for mc — credentials are
+    /// percent-encoded to avoid argv exposure and to handle special chars in
+    /// base64-like secret keys.
+    fn mc_env(&self, env: &HashMap<String, String>) -> HashMap<String, String> {
         let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
         let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
 
-        // Build MC_HOST_vivo-sync URL — credentials percent-encoded to avoid argv exposure
-        // and handle special chars in base64-like secret keys
         let (scheme, host) = self.endpoint.split_once("://").unwrap_or(("https", &self.endpoint));
         let mc_host = format!("{}://{}:{}@{}", scheme, percent_encode_credential(key), percent_encode_credential(secret), host);
 
-        let dest = self.mc_dest();
         let mut mc_env = HashMap::new();
         mc_env.insert("MC_HOST_vivo-sync".to_string(), mc_host);
+        mc_env
+    }
+
+    fn rclone_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+        let mut rclone_env = HashMap::new();
+        rclone_env.insert(
+            "RCLONE_S3_ACCESS_KEY_ID".to_string(),
+            env.get("AWS_ACCESS_KEY_ID").cloned().unwrap_or_default(),
+        );
+        rclone_env.insert(
+            "RCLONE_S3_SECRET_ACCESS_KEY".to_string(),
+            env.get("AWS_SECRET_ACCESS_KEY").cloned().unwrap_or_default(),
+        );
+        rclone_env
+    }
+
+    /// Lists the bucket with whichever sync tool is installed (15s timeout).
+    /// `Ok(false)` means the listing failed or timed out: the bucket may not
+    /// exist yet, or the credentials/endpoint are wrong. `Err` means no sync
+    /// tool is installed.
+    pub fn bucket_reachable(&self, env: &HashMap<String, String>) -> Result<bool, String> {
+        let mut cmd = match detect_tool()?.0 {
+            SyncTool::Mc => {
+                let mut c = Command::new("mc");
+                c.args(["ls", &format!("vivo-sync/{}", self.bucket)]).envs(self.mc_env(env));
+                c
+            }
+            SyncTool::Aws => {
+                let mut c = Command::new("aws");
+                c.args(["s3", "ls", &format!("s3://{}", self.bucket), "--endpoint-url", &self.endpoint])
+                    .envs(env);
+                c
+            }
+            SyncTool::Rclone => {
+                let mut c = Command::new("rclone");
+                c.args(["lsd", &format!(":s3:{}", self.bucket), "--s3-provider", "Other", "--s3-endpoint", &self.endpoint])
+                    .envs(Self::rclone_env(env));
+                c
+            }
+        };
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        crate::doctor::run_with_timeout(&mut cmd, std::time::Duration::from_secs(15))
+    }
+
+    /// Creates the bucket if it doesn't exist, using whichever sync tool is
+    /// installed. Doubles as a credentials/endpoint check: it fails with the
+    /// tool's own error on a bad key, unreachable host, or TLS problem.
+    pub fn ensure_bucket(&self, env: &HashMap<String, String>) -> Result<(), String> {
+        match detect_tool()?.0 {
+            SyncTool::Mc => self.ensure_bucket_mc(&self.mc_env(env)),
+            SyncTool::Aws => self.ensure_bucket_aws(env),
+            SyncTool::Rclone => self.ensure_bucket_rclone(&Self::rclone_env(env)),
+        }
+    }
+
+    fn sync_mc(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        let dest = self.mc_dest();
+        let mc_env = self.mc_env(env);
 
         self.ensure_bucket_mc(&mc_env)?;
 
@@ -213,12 +271,7 @@ impl RustfsBackend {
 
     fn sync_rclone(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
         let dest = self.rclone_dest();
-        let key = env.get("AWS_ACCESS_KEY_ID").cloned().unwrap_or_default();
-        let secret = env.get("AWS_SECRET_ACCESS_KEY").cloned().unwrap_or_default();
-
-        let mut rclone_env = HashMap::new();
-        rclone_env.insert("RCLONE_S3_ACCESS_KEY_ID".to_string(), key);
-        rclone_env.insert("RCLONE_S3_SECRET_ACCESS_KEY".to_string(), secret);
+        let rclone_env = Self::rclone_env(env);
 
         self.ensure_bucket_rclone(&rclone_env)?;
         self.run_sync_command(
@@ -398,6 +451,7 @@ mod tests {
     #[test]
     fn check_installed_fails_when_no_tools_on_path() {
         let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", "");
         let result = b.check_installed();

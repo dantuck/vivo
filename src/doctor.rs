@@ -130,7 +130,7 @@ pub fn check_secrets_present(secrets_path: &str) -> CheckResult {
 }
 
 pub fn check_restic_password(secrets: &Secrets) -> CheckResult {
-    if secrets.restic_password.is_empty() || secrets.restic_password == "change-me" {
+    if crate::backup_config::is_placeholder_password(&secrets.restic_password) {
         CheckResult {
             label: "restic_password".to_string(),
             status: CheckStatus::Fail,
@@ -272,18 +272,70 @@ pub fn fix_s3_sync_tool() -> Result<bool, String> {
                 println!("\nInstalled to {install_path} but binary did not execute — check permissions.");
             }
         }
-        McInstallMethod::Brew => {
-            let status = process::Command::new("brew")
-                .args(["install", "minio/stable/mc"])
-                .status()
-                .map_err(|e| format!("failed to run brew: {e}"))?;
-            if !status.success() {
-                return Err(format!("brew install failed with status {status}"));
-            }
-        }
+        McInstallMethod::Brew => brew_install(&["minio/stable/mc"])?,
         McInstallMethod::Unsupported => unreachable!(),
     }
     Ok(true)
+}
+
+/// Runs `brew install <args>` with output shown to the user.
+fn brew_install(args: &[&str]) -> Result<(), String> {
+    let status = process::Command::new("brew")
+        .arg("install")
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run brew: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("brew install failed with status {status}"))
+    }
+}
+
+/// Offers to install missing core tools (`restic`, `sops`, `age`) with Homebrew.
+/// `packages` are brew formula names. Returns Ok(true) if an install ran.
+/// Without Homebrew it prints where to get the tools and returns Ok(false).
+pub fn fix_core_tools(packages: &[&str]) -> Result<bool, String> {
+    if packages.is_empty() {
+        return Ok(false);
+    }
+    let has_brew = tool_version("brew", "--version").is_some();
+    if !has_brew {
+        println!("\nInstall the missing tools with your package manager, or from:");
+        for pkg in packages {
+            match *pkg {
+                "restic" => println!("  restic  https://restic.net"),
+                "sops" => println!("  sops    https://github.com/getsops/sops"),
+                "age" => println!("  age     https://age-encryption.org"),
+                other => println!("  {other}"),
+            }
+        }
+        return Ok(false);
+    }
+
+    let cmd = format!("brew install {}", packages.join(" "));
+    println!("\nProposed fix: {cmd}");
+    match inquire::Confirm::new("Run it now?").with_default(true).prompt() {
+        Ok(true) => {}
+        _ => return Ok(false),
+    }
+    brew_install(packages)?;
+    Ok(true)
+}
+
+/// Creates the age identity file `sops` uses to encrypt vivo's secrets.
+pub fn generate_age_key(path: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let status = process::Command::new("age-keygen")
+        .args(["-o", path])
+        .status()
+        .map_err(|e| format!("failed to run age-keygen: {e}"))?;
+    if !status.success() {
+        return Err(format!("age-keygen failed with status {status}"));
+    }
+    Ok(())
 }
 
 pub(crate) fn run_with_timeout(cmd: &mut process::Command, timeout: Duration) -> Result<bool, String> {
@@ -324,7 +376,7 @@ pub fn check_remote_connectivity(
     if url.starts_with("b2:") {
         let bucket = url.strip_prefix("b2:").unwrap_or("").split(':').next().unwrap_or("");
         let mut cmd = process::Command::new("b2");
-        cmd.args(["ls", bucket])
+        cmd.args(["ls", &format!("b2://{bucket}")])
             .envs(creds)
             .stdout(process::Stdio::null())
             .stderr(process::Stdio::null());
@@ -354,78 +406,14 @@ pub fn check_remote_connectivity(
             Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
         }
     } else if url.starts_with("rustfs:") {
-        let parsed = crate::remote::RustfsBackend::from_url(url)
-            .ok()
-            .map(|b| (b.endpoint, b.bucket));
-
-        match parsed {
-            None => CheckResult {
+        match crate::remote::RustfsBackend::from_url(url).and_then(|b| b.bucket_reachable(creds)) {
+            Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
+            Ok(false) => CheckResult {
                 label,
                 status: CheckStatus::Warn,
-                detail: Some("could not parse endpoint/bucket from rustfs URL".to_string()),
+                detail: Some("connection timed out or failed — check rustfs credentials and endpoint".to_string()),
             },
-            Some((endpoint, bucket)) => {
-                let mc_available = process::Command::new("mc")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-
-                let aws_available = !mc_available && process::Command::new("aws")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-
-                if mc_available {
-                    let key = creds.get("AWS_ACCESS_KEY_ID").map(|s| s.as_str()).unwrap_or("");
-                    let secret = creds.get("AWS_SECRET_ACCESS_KEY").map(|s| s.as_str()).unwrap_or("");
-                    let scheme_end = endpoint.find("://").map(|i| i + 3).unwrap_or(0);
-                    let mc_host = format!(
-                        "{}{}:{}@{}",
-                        &endpoint[..scheme_end],
-                        crate::remote::percent_encode_credential(key),
-                        crate::remote::percent_encode_credential(secret),
-                        &endpoint[scheme_end..],
-                    );
-                    let mut cmd = process::Command::new("mc");
-                    cmd.args(["ls", &format!("vivo-check/{bucket}")])
-                        .env("MC_HOST_vivo-check", &mc_host)
-                        .stdout(process::Stdio::null())
-                        .stderr(process::Stdio::null());
-                    match run_with_timeout(&mut cmd, timeout) {
-                        Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
-                        Ok(false) => CheckResult {
-                            label,
-                            status: CheckStatus::Warn,
-                            detail: Some("connection timed out or failed — check rustfs credentials and endpoint".to_string()),
-                        },
-                        Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
-                    }
-                } else if aws_available {
-                    let dest = format!("s3://{bucket}");
-                    let mut cmd = process::Command::new("aws");
-                    cmd.args(["s3", "ls", &dest, "--endpoint-url", &endpoint])
-                        .envs(creds)
-                        .stdout(process::Stdio::null())
-                        .stderr(process::Stdio::null());
-                    match run_with_timeout(&mut cmd, timeout) {
-                        Ok(true) => CheckResult { label, status: CheckStatus::Ok, detail: None },
-                        Ok(false) => CheckResult {
-                            label,
-                            status: CheckStatus::Warn,
-                            detail: Some("connection timed out or failed — check rustfs credentials and endpoint".to_string()),
-                        },
-                        Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
-                    }
-                } else {
-                    CheckResult {
-                        label,
-                        status: CheckStatus::Warn,
-                        detail: Some("connectivity check requires mc or aws CLI — install mc for best rustfs compatibility".to_string()),
-                    }
-                }
-            }
+            Err(e) => CheckResult { label, status: CheckStatus::Warn, detail: Some(e) },
         }
     } else {
         CheckResult {
@@ -511,13 +499,7 @@ pub fn fix_fuse() -> Result<bool, String> {
         _ => return Ok(false),
     }
 
-    let status = process::Command::new("brew")
-        .args(["install", "--cask", "macfuse"])
-        .status()
-        .map_err(|e| format!("failed to run brew: {e}"))?;
-    if !status.success() {
-        return Err(format!("brew install failed with status {status}"));
-    }
+    brew_install(&["--cask", "macfuse"])?;
 
     println!(
         "\nmacFUSE installed. macOS requires approving the system extension in \
@@ -803,6 +785,7 @@ tasks {{
     #[cfg(target_os = "linux")]
     #[test]
     fn check_fuse_fails_when_path_is_empty() {
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", "");
         let r = check_fuse();
@@ -818,6 +801,7 @@ tasks {{
 
     #[test]
     fn check_s3_sync_tool_fails_when_no_tools() {
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", "");
         let r = check_s3_sync_tool();

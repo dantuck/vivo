@@ -65,7 +65,7 @@ pub fn build_cli() -> Command {
                 .arg_required_else_help(true)
                 .subcommand(Command::new("init").about("Create and encrypt a new secrets file"))
                 .subcommand(Command::new("edit").about("Edit secrets with sops"))
-                .subcommand(Command::new("show").about("Decrypt and print secrets"))
+                .subcommand(Command::new("show").about("Print secrets with values masked"))
                 .subcommand(Command::new("import-b2").about("Authorize with b2 and import credentials into secrets"))
                 .subcommand(
                     Command::new("import-s3")
@@ -145,7 +145,7 @@ pub fn build_cli() -> Command {
                 .arg_required_else_help(true)
                 .subcommand(
                     Command::new("add")
-                        .about("Add a remote to a task")
+                        .about("Add a remote to a task (guided when --url/--credentials are omitted)")
                         .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Task name"))
                         .arg(Arg::new("url").long("url").short('u').value_name("URL").help("Remote URL"))
                         .arg(
@@ -165,6 +165,17 @@ pub fn build_cli() -> Command {
                                 .short('t')
                                 .value_name("TASK")
                                 .help("Filter by task name"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("test")
+                        .about("Test remote connectivity and credentials (all remotes, or filter with --task)")
+                        .arg(
+                            Arg::new("task")
+                                .long("task")
+                                .short('t')
+                                .value_name("TASK")
+                                .help("Only test this task's remotes"),
                         ),
                 )
                 .subcommand(

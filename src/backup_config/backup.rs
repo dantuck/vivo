@@ -170,9 +170,11 @@ impl Backup {
         execute_command("restic", args)
     }
 
-    fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) {
+    /// Syncs every remote, continuing past failures. Returns how many failed.
+    fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) -> usize {
         let local_repo = expand_env_vars(&self.repo);
         let mut creds_cache: HashMap<String, HashMap<String, String>> = credentials.clone();
+        let mut failed = 0;
 
         for remote in &self.remotes {
             if !creds_cache.contains_key(&remote.credentials) {
@@ -185,6 +187,7 @@ impl Backup {
                         }
                         Err(e) => {
                             eprintln!("error: re-authorization failed: {e} — skipping remote {}", remote.url);
+                            failed += 1;
                             continue;
                         }
                     }
@@ -193,6 +196,7 @@ impl Backup {
                         "error: credentials profile '{}' not found in secrets — skipping remote {}",
                         remote.credentials, remote.url
                     );
+                    failed += 1;
                     continue;
                 }
             }
@@ -202,20 +206,24 @@ impl Backup {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("error: {e}");
+                    failed += 1;
                     continue;
                 }
             };
 
             if let Err(e) = backend.check_installed() {
                 eprintln!("error: {e}");
+                failed += 1;
                 continue;
             }
 
             ui::info(&format!("Syncing to {}", remote.url));
             if let Err(e) = backend.sync(&local_repo, dry_run, creds) {
                 eprintln!("error: sync to {} failed: {e}", remote.url);
+                failed += 1;
             }
         }
+        failed
     }
 
     fn is_local_repo(repo: &str) -> bool {
@@ -225,13 +233,14 @@ impl Backup {
             || repo.starts_with('~')
     }
 
-    fn ensure_local_repo_init(&self) -> Result<(), String> {
+    /// Path of the local repository if it doesn't exist yet.
+    fn missing_local_repo(&self) -> Option<String> {
         let repo = expand_env_vars(&self.repo);
-        if !Self::is_local_repo(&repo) {
-            return Ok(());
-        }
-        let config_file = Path::new(&repo).join("config");
-        if !config_file.exists() {
+        (Self::is_local_repo(&repo) && !Path::new(&repo).join("config").exists()).then_some(repo)
+    }
+
+    fn ensure_local_repo_init(&self) -> Result<(), String> {
+        if let Some(repo) = self.missing_local_repo() {
             fs::create_dir_all(&repo)
                 .map_err(|e| format!("could not create repo directory '{repo}': {e}"))?;
             execute_command("restic", vec!["init".to_string(), "-r".to_string(), repo])?;
@@ -239,15 +248,27 @@ impl Backup {
         Ok(())
     }
 
+    /// Runs the backup phases. `Ok(n)` means the backup succeeded but `n`
+    /// remotes failed to sync; `Err` means a phase before syncing failed.
     pub fn run(
         &self,
         config: &VivoConfig,
         credentials: &HashMap<String, HashMap<String, String>>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let dry_run = config.dry_run || self.dry_run.unwrap_or(false);
 
         if config.start_step <= Step::Backup {
-            self.ensure_local_repo_init()?;
+            if dry_run {
+                // A dry run must not create anything, and every later phase needs a repo.
+                if let Some(repo) = self.missing_local_repo() {
+                    println!("[dry-run] restic repository {repo} does not exist yet.");
+                    println!("[dry-run] a real run would initialize it, then back up {}.",
+                        self.directory.as_deref().unwrap_or("the configured files"));
+                    return Ok(0);
+                }
+            } else {
+                self.ensure_local_repo_init()?;
+            }
             self.backup(dry_run)?;
         }
         if config.start_step <= Step::Check {
@@ -257,9 +278,9 @@ impl Backup {
             self.forget(dry_run)?;
         }
         if config.start_step <= Step::Sync {
-            self.sync_remotes(dry_run, credentials);
+            return Ok(self.sync_remotes(dry_run, credentials));
         }
-        Ok(())
+        Ok(0)
     }
 }
 

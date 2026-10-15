@@ -204,87 +204,12 @@ fn add_task_prompt(app: &App) -> Result<String, String> {
     Ok(format!("Added task '{name}'."))
 }
 
-fn restic_url(url: &str) -> String {
-    if url.starts_with("rustfs:") {
-        url.replacen("rustfs:", "s3:", 1)
-    } else {
-        url.to_string()
-    }
-}
-
-pub(crate) fn repo_needs_init(output: &str) -> bool {
-    output.contains("Is there a repository")
-}
-
-fn offer_repo_init(url: &str, profile: &str, secrets_path: &str) -> Result<String, String> {
-    // Decrypt secrets to get credentials for this profile
-    let decrypted = match crate::backup_config::decrypt_sops_file(secrets_path) {
-        Ok(d) => d,
-        Err(_) => return Ok(String::new()), // No sops key available — skip silently
-    };
-    let secrets = match crate::backup_config::parse_secrets(&decrypted) {
-        Ok(s) => s,
-        Err(_) => return Ok(String::new()),
-    };
-
-    env::set_var("RESTIC_PASSWORD", &secrets.restic_password);
-
-    if let Some(creds) = secrets.credentials.get(profile) {
-        for (k, v) in creds {
-            env::set_var(k, v);
-        }
-    }
-
-    let rurl = restic_url(url);
-
-    // Check if a repo exists at this location
-    let output = match process::Command::new("restic")
-        .args(["-r", &rurl, "snapshots", "--no-lock", "--no-cache"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Ok(String::new()), // restic not available — skip silently
-    };
-
-    if output.status.success() {
-        return Ok(String::new()); // Repo already exists
-    }
-
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    if !repo_needs_init(&combined) {
-        return Ok(String::new()); // Different error (bad creds, network) — skip
-    }
-
-    // No repo found — offer to initialize
-    let init = match inquire::Confirm::new(&format!(
-        "No repository found at '{url}'. Initialize it now?"
-    ))
-    .with_default(true)
-    .prompt()
-    {
-        Ok(v) => v,
-        Err(_) => return Ok(String::new()), // Cancelled — skip silently
-    };
-
-    if !init {
-        return Ok(String::new());
-    }
-
-    println!("\nInitializing repository at {rurl}...");
-    let status = process::Command::new("restic")
-        .args(["-r", &rurl, "init"])
-        .status()
-        .map_err(|e| format!("restic init failed: {e}"))?;
-
-    if status.success() {
-        Ok("Repository initialized.".to_string())
-    } else {
-        Err(format!("restic init failed (exit {}).", status.code().unwrap_or(-1)))
+/// Tests a just-saved remote and returns a one-line status for the footer.
+/// Never fails the add/edit itself — the remote is already written.
+fn offer_remote_test(url: &str, profile: &str, secrets_path: &str) -> String {
+    match crate::remote_setup::test_remote(url, profile, secrets_path, true) {
+        Ok(msg) => msg,
+        Err(e) => format!("Warning: {}", e.lines().next().unwrap_or("remote test failed")),
     }
 }
 
@@ -349,13 +274,8 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
 
-    let init_msg = offer_repo_init(&url, &credentials, &secrets_path)?;
-    let msg = if init_msg.is_empty() {
-        format!("Added remote '{url}' to task '{task_name}'.")
-    } else {
-        format!("Added remote '{url}' to task '{task_name}'. {init_msg}")
-    };
-    Ok(msg)
+    let test_msg = offer_remote_test(&url, &credentials, &secrets_path);
+    Ok(format!("Added remote '{url}' to task '{task_name}'. {test_msg}"))
 }
 
 fn add_call_prompt(app: &App) -> Result<String, String> {
@@ -597,68 +517,22 @@ fn test_remote_prompt(app: &App) -> Result<String, String> {
         .ok_or("no remote selected")?;
     let url = remote.url.clone();
     let profile = remote.credentials.clone();
-
     let secrets_path = crate::config::secrets_path_from();
-    println!("Decrypting secrets from {secrets_path}...");
-    let decrypted =
-        crate::backup_config::decrypt_sops_file(&secrets_path).map_err(|e| e.to_string())?;
-    let secrets =
-        crate::backup_config::parse_secrets(&decrypted).map_err(|e| e.to_string())?;
 
-    env::set_var("RESTIC_PASSWORD", &secrets.restic_password);
-
-    let creds = secrets.credentials.get(&profile).ok_or_else(|| {
-        format!("credentials profile '{profile}' not found in secrets")
-    })?;
-    for (k, v) in creds {
-        env::set_var(k, v);
-    }
-
-    println!("\nTesting remote: {url}");
+    println!("Testing remote: {url}");
     println!("Credentials:    {profile}\n");
 
-    let (status, restic_output) = if url.starts_with("b2:") {
-        let path = url.trim_start_matches("b2:").trim_start_matches('/');
-        let s = process::Command::new("b2")
-            .args(["ls", path])
-            .status()
-            .map_err(|e| format!("could not run b2: {e}"))?;
-        (s, String::new())
-    } else {
-        let rurl = restic_url(&url);
-        let out = process::Command::new("restic")
-            .args(["-r", &rurl, "snapshots", "--no-lock", "--no-cache"])
-            .output()
-            .map_err(|e| format!("could not run restic: {e}"))?;
-        print!("{}", String::from_utf8_lossy(&out.stdout));
-        print!("{}", String::from_utf8_lossy(&out.stderr));
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        (out.status, combined)
-    };
-
-    println!();
-    let mut summary = if status.success() {
-        "Remote test passed.".to_string()
-    } else {
-        format!("Remote test failed (exit {}).", status.code().unwrap_or(-1))
-    };
-    println!("{summary}");
-
-    if !status.success() && repo_needs_init(&restic_output) {
-        let secrets_path = crate::config::secrets_path_from();
-        match offer_repo_init(&url, &profile, &secrets_path) {
-            Ok(msg) if !msg.is_empty() => {
-                summary = msg.clone();
-                println!("{msg}");
-            }
-            Err(e) => println!("Init failed: {e}"),
-            _ => {}
+    let result = crate::remote_setup::test_remote(&url, &profile, &secrets_path, true);
+    let summary = match &result {
+        Ok(msg) => {
+            println!("{msg}");
+            format!("Remote test passed. {msg}")
         }
-    }
+        Err(e) => {
+            println!("{e}");
+            format!("Remote test failed: {}", e.lines().next().unwrap_or(""))
+        }
+    };
 
     println!("\nPress Enter to return...");
     std::io::stdin().read_line(&mut String::new()).ok();
@@ -863,34 +737,6 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
     )?;
     std::fs::write(&app.config_path, new_kdl).map_err(|e| e.to_string())?;
 
-    let init_msg = offer_repo_init(&url, &credentials, &secrets_path)?;
-    let msg = if init_msg.is_empty() {
-        "Updated remote.".to_string()
-    } else {
-        format!("Updated remote. {init_msg}")
-    };
-    Ok(msg)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn repo_needs_init_detects_missing_repo() {
-        let output = "Fatal: unable to open config file: Stat: The specified key does not exist.\nIs there a repository at the following location?\ns3:https://example.com/bucket\n";
-        assert!(repo_needs_init(output));
-    }
-
-    #[test]
-    fn repo_needs_init_false_for_other_errors() {
-        let output = "Fatal: unable to open config file: Forbidden\n";
-        assert!(!repo_needs_init(output));
-    }
-
-    #[test]
-    fn repo_needs_init_false_for_success() {
-        let output = "snapshot abc123 ...\n";
-        assert!(!repo_needs_init(output));
-    }
+    let test_msg = offer_remote_test(&url, &credentials, &secrets_path);
+    Ok(format!("Updated remote. {test_msg}"))
 }

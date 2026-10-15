@@ -160,10 +160,7 @@ pub fn run_preflight(
 }
 
 pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> Result<(), String> {
-    let content = fs::read_to_string(config_path)
-        .map_err(|e| format!("could not read config '{config_path}': {e}"))?;
-    let config: BackupConfig = knuffel::parse(config_path, &content)
-        .map_err(|e| format!("config parse error: {e}"))?;
+    let config = BackupConfig::from_file(config_path)?;
 
     let secrets_yaml = crate::backup_config::decrypt_sops_file(secrets_path)
         .map_err(|e| format!("could not decrypt secrets: {e}"))?;
@@ -412,6 +409,7 @@ tasks {
     #[test]
     fn run_preflight_fails_when_restic_missing() {
         // Override PATH to empty so restic is not found
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", "");
         let ok = run_preflight("/tmp/norepo", &HashMap::new(), "pw", None);

@@ -1,5 +1,5 @@
 mod app;
-mod credentials;
+pub(crate) mod credentials;
 mod events;
 mod ui;
 
@@ -16,10 +16,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 pub fn run(config_path: &str) -> Result<(), String> {
-    let content = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("could not read config: {e}"))?;
-    let config: crate::backup_config::BackupConfig =
-        knuffel::parse(config_path, &content).map_err(|e| e.to_string())?;
+    let config = crate::backup_config::BackupConfig::from_file(config_path)?;
 
     let mut app_state = App::new(&config, config_path.to_string());
 
