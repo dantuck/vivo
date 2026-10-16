@@ -7,6 +7,30 @@ use ratatui::{
 };
 use super::app::{App, Pane};
 
+// Palette. ANSI "bright black" (DarkGray) is nearly invisible on several
+// popular dark themes, so text uses a fixed 256-color gray instead and
+// DarkGray is kept for unfocused borders only.
+const MUTED: Style = Style::new().fg(Color::Indexed(247));
+const FAINT: Style = Style::new().fg(Color::Indexed(244)).add_modifier(Modifier::ITALIC);
+const ACCENT: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+const BORDER_IDLE: Style = Style::new().fg(Color::Indexed(240));
+const SELECTED: Style = Style::new()
+    .fg(Color::Black)
+    .bg(Color::Yellow)
+    .add_modifier(Modifier::BOLD);
+// Selected row in a pane that doesn't have focus: still visible, but quieter.
+const SELECTED_IDLE: Style = Style::new()
+    .bg(Color::Indexed(238))
+    .add_modifier(Modifier::BOLD);
+
+fn selection(focused: bool) -> Style {
+    if focused { SELECTED } else { SELECTED_IDLE }
+}
+
+fn header(focused: bool) -> Style {
+    if focused { ACCENT } else { MUTED }
+}
+
 // Pre-padded to 14 chars — avoids a format! allocation per field per frame.
 const FIELD_LABELS: [&str; 6] = [
     "Name          ",
@@ -34,11 +58,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn focused_border(focused: bool) -> Style {
-    if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    }
+    if focused { ACCENT } else { BORDER_IDLE }
 }
 
 fn draw_tasks(f: &mut Frame, app: &App, area: Rect) {
@@ -61,7 +81,7 @@ fn draw_tasks(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Tasks ")
                 .border_style(focused_border(app.focused_pane == Pane::Tasks)),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(selection(app.focused_pane == Pane::Tasks));
 
     let mut state = ListState::default();
     if !app.tasks.is_empty() {
@@ -113,9 +133,8 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let in_fields = app.focused_pane == Pane::Fields;
-    let label_style = Style::default().fg(Color::DarkGray);
-    let dim = label_style.add_modifier(Modifier::DIM);
-    let highlight = Style::default().add_modifier(Modifier::REVERSED);
+    let label_style = MUTED;
+    let highlight = selection(in_fields);
 
     let values: [Option<&str>; 6] = [
         Some(task.name.as_str()),
@@ -130,10 +149,10 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, label)| {
-            let selected = in_fields && i == app.selected_field;
+            let selected = i == app.selected_field;
             let value_span = match values[i] {
                 Some(v) if !v.is_empty() => Span::raw(v.to_string()),
-                _ => Span::styled("(none)", dim),
+                _ => Span::styled("(none)", FAINT),
             };
             let line = Line::from(vec![Span::styled(*label, label_style), value_span]);
             if selected { line.style(highlight) } else { line }
@@ -152,11 +171,7 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    let header_style = if app.focused_pane == Pane::Remotes {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let header_style = header(app.focused_pane == Pane::Remotes);
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!("Remotes ({count}):"),
@@ -171,10 +186,10 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(selection(app.focused_pane == Pane::Remotes));
 
     let mut state = ListState::default();
-    if !remotes.is_empty() && app.focused_pane == Pane::Remotes {
+    if !remotes.is_empty() {
         state.select(Some(app.selected_remote.min(remotes.len() - 1)));
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
@@ -189,11 +204,7 @@ fn draw_calls_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    let header_style = if app.focused_pane == Pane::Calls {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let header_style = header(app.focused_pane == Pane::Calls);
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!("Calls ({count}):"),
@@ -208,10 +219,10 @@ fn draw_calls_list(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(selection(app.focused_pane == Pane::Calls));
 
     let mut state = ListState::default();
-    if !calls.is_empty() && app.focused_pane == Pane::Calls {
+    if !calls.is_empty() {
         state.select(Some(app.selected_call.min(calls.len() - 1)));
     }
     f.render_stateful_widget(list, chunks[1], &mut state);
@@ -234,6 +245,6 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     };
     let status = app.status_message.as_deref().unwrap_or(default_hint);
     let para = Paragraph::new(Line::from(vec![Span::raw(format!(" {status}"))]))
-        .style(Style::default().fg(Color::DarkGray));
+        .style(MUTED);
     f.render_widget(para, area);
 }
