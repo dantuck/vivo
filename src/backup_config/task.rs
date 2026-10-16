@@ -4,7 +4,7 @@ use log::info;
 
 use kdl::KdlNode;
 
-use crate::backup_config::backup::{Backup, Remote};
+use crate::backup_config::backup::{Backup, Remote, RunOutcome};
 use crate::backup_config::kdl_decode::{named, ConfigError, Source};
 use crate::config::VivoConfig;
 use crate::ui;
@@ -16,12 +16,16 @@ pub struct Task {
     backup: Option<Backup>,
     commands: Vec<String>,
     calls: Vec<String>,
+    /// Run after the task finishes with no errors (skipped on dry runs).
+    on_success: Vec<String>,
+    /// Run after the task finishes with errors (skipped on dry runs).
+    on_failure: Vec<String>,
 }
 
 impl Task {
     pub(crate) fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
         let children = src.children(node);
-        src.only(children, &["description", "backup", "command", "calls"])?;
+        src.only(children, &["description", "backup", "command", "calls", "on-success", "on-failure"])?;
         Ok(Task {
             name: src.argument(node)?,
             description: src
@@ -38,13 +42,23 @@ impl Task {
             calls: named(children, "calls")
                 .map(|n| src.leaf_argument(n))
                 .collect::<Result<_, _>>()?,
+            on_success: named(children, "on-success")
+                .map(|n| src.leaf_argument(n))
+                .collect::<Result<_, _>>()?,
+            on_failure: named(children, "on-failure")
+                .map(|n| src.leaf_argument(n))
+                .collect::<Result<_, _>>()?,
         })
     }
 }
 
 fn run_command(cmd: &str) {
+    run_command_with_env(cmd, &[]);
+}
+
+fn run_command_with_env(cmd: &str, env: &[(&str, &str)]) {
     ui::info(&format!("Running: {cmd}"));
-    match std::process::Command::new("sh").args(["-c", cmd]).status() {
+    match std::process::Command::new("sh").args(["-c", cmd]).envs(env.iter().copied()).status() {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("warning: command exited with status {s}: {cmd}"),
         Err(e) => eprintln!("warning: failed to run command '{cmd}': {e}"),
@@ -119,6 +133,7 @@ impl Task {
         seen: &mut HashSet<String>,
     ) -> bool {
         let mut ok = true;
+        let mut error = None;
         info!("Running task [{}]", self.name);
         ui::section_header(&format!("Running task [{}]", self.name));
 
@@ -127,19 +142,42 @@ impl Task {
         }
 
         if let Some(backup) = &self.backup {
-            match backup.run(config, credentials) {
-                Ok(0) => {}
-                Ok(failed_syncs) => {
-                    eprintln!("error: {failed_syncs} remote sync(s) failed");
-                    ok = false;
+            match backup.run(config, &self.name, credentials) {
+                Ok(outcome) => {
+                    let failed = outcome.failed_syncs();
+                    if failed > 0 {
+                        eprintln!("error: {failed} remote sync(s) failed");
+                        ok = false;
+                    }
+                    crate::state::record_run(&self.name, outcome.dry_run, &outcome, None);
                 }
                 Err(e) => {
                     eprintln!("error: {e}");
-                    return false;
+                    crate::state::record_run(&self.name, self.is_dry_run(config), &RunOutcome::default(), Some(&e));
+                    ok = false;
+                    error = Some(e);
                 }
             }
         }
 
+        // A failed backup step stops the task: later commands and calls would
+        // run against a repo that did not get its snapshot.
+        if error.is_none() {
+            ok &= self.run_commands_and_calls(config, tasks, credentials, seen);
+        }
+
+        self.run_hooks(config, ok, error.as_deref());
+        ok
+    }
+
+    fn run_commands_and_calls(
+        &self,
+        config: &VivoConfig,
+        tasks: &[Task],
+        credentials: &HashMap<String, HashMap<String, String>>,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        let mut ok = true;
         for command in &self.commands {
             run_command(command);
         }
@@ -148,5 +186,27 @@ impl Task {
             ok &= run_call(call, seen, config, tasks, credentials);
         }
         ok
+    }
+
+    /// True for `--dry-run` or the task's own `dry-run true`.
+    fn is_dry_run(&self, config: &VivoConfig) -> bool {
+        config.dry_run || self.backup.as_ref().is_some_and(|b| b.dry_run())
+    }
+
+    /// Runs `on-success` / `on-failure` commands. They see `VIVO_TASK`,
+    /// `VIVO_STATUS` (`success` or `failure`) and `VIVO_ERROR` (may be empty).
+    fn run_hooks(&self, config: &VivoConfig, ok: bool, error: Option<&str>) {
+        let hooks = if ok { &self.on_success } else { &self.on_failure };
+        if self.is_dry_run(config) || hooks.is_empty() {
+            return;
+        }
+        let env = [
+            ("VIVO_TASK", self.name.as_str()),
+            ("VIVO_STATUS", if ok { "success" } else { "failure" }),
+            ("VIVO_ERROR", error.unwrap_or("")),
+        ];
+        for hook in hooks {
+            run_command_with_env(hook, &env);
+        }
     }
 }

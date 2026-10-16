@@ -63,6 +63,8 @@ tasks {
 
 **Dev config:** `.cargo/config.toml` sets `VIVO_BACKUP_CONFIG=sample.kdl` so `cargo run` uses a local sample config during development.
 
+**Task hooks:** `on-success` / `on-failure` commands run after a task (not on dry runs) with `VIVO_TASK`, `VIVO_STATUS`, `VIVO_ERROR`. A failed backup step stops the task's `command`/`calls`; restic exit code 3 (some files unreadable) is a warning, not a failure (`RESTIC_PARTIAL_BACKUP` in `backup.rs`). `Backup::run` returns a `RunOutcome` that `state::record_run` persists.
+
 **`--dry-run`:** Skips remote sync entirely; forwards `--dry-run` to `restic backup` and `restic forget`.
 
 **`--start-step` / `-S`:** Skips earlier steps. Valid values: `backup`, `check`, `forget`, `sync`.
@@ -73,6 +75,10 @@ tasks {
 - `vivo secrets {init,edit,show,import-b2,import-s3}` — manage the SOPS-encrypted secrets file
 - `vivo remote {add,list,test,remove}` — `add` is guided on a TTY when `--url`/`--credentials` are omitted; `test` checks every remote (or `--task`)
 - `vivo manage` — full-screen TUI config manager (see below)
+- `vivo schedule {add,remove,status}` — installs a daily launchd agent / systemd user timer / crontab block (`src/schedule.rs` renders and installs; `src/bin/vivo/schedule.rs` is the CLI; `init` offers it). Scheduled jobs get an explicit `PATH` and the resolved config/secrets/age-key/state paths pinned as environment variables; `install` also writes `schedule.json` (backend, time, task) to the state dir, which `status` reads instead of parsing the rendered unit
+- `vivo status` — newest snapshot per local repo (via `restic snapshots --json`) plus last-sync results recorded in `state.json` (`src/state.rs`, in `$VIVO_STATE_DIR` / `~/.local/state/vivo`); exits non-zero on stale/failed/never-run
+- `vivo snapshots [task] [--remote]` and `vivo restore [task]` — built on `src/repos.rs` (`RepoTarget`: per-task local + remote repos with restic env; `rustfs:` → `s3:`, B2 key names mapped to `B2_ACCOUNT_*`). Restore defaults to `~/vivo-restore/<task>`, local repo first, falling back to a remote when the local repo is gone
+- `vivo recover --from <url>` — rebuilds `backup.kdl` + `secrets.yaml` from the recovery copy (`src/recovery.rs`). Each real sync uploads `secrets.yaml`, an age-encrypted `backup.kdl.age` and a README to a *sibling* of the remote's repo path (never inside it: b2/mc/aws/rclone sync all delete extras). Each `RemoteBackend` decides its own location via `recovery_store()` (an `ObjectStore` in `src/remote/objects.rs`); the same trait also owns `restic_url()`, `restic_env()` (B2 key renames) and `credential_vars()`, which `repos.rs`, `mount.rs` and `recover` use instead of per-scheme branches. `recovery::Source` hashes the plaintext and runs `age` only when some remote needs an upload; an upload is skipped when the hash matches the remote's `RecoveryState` (`Current`/`Stale`/`Missing` in `state.json`); the README file is only sent on the first upload; `remote { recovery false }` opts out; failures warn and show in `vivo status`, never fail the backup
 - `vivo mount [path]` — mount a backup repo as a FUSE filesystem
 
 **TUI (`vivo manage`):** Four panes, Tab to cycle: Tasks → Fields → Remotes → Calls → Tasks.

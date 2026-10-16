@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -20,12 +20,15 @@ pub struct Remote {
     pub credentials: String,
     pub mc_max_workers: Option<u32>,
     pub mc_limit_upload: Option<String>,
+    /// Keep an off-site recovery copy of the config and secrets next to this
+    /// remote's repository (`recovery false` opts out).
+    pub recovery: bool,
 }
 
 impl Remote {
     pub(crate) fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
         let children = src.children(node);
-        src.only(children, &["credentials", "mc-max-workers", "mc-limit-upload"])?;
+        src.only(children, &["credentials", "mc-max-workers", "mc-limit-upload", "recovery"])?;
         Ok(Remote {
             url: src.argument(node)?,
             credentials: src.string_value(src.required(node, children, "credentials")?)?,
@@ -37,6 +40,11 @@ impl Remote {
                 .optional(children, "mc-limit-upload")?
                 .map(|n| src.string_value(n))
                 .transpose()?,
+            recovery: src
+                .optional(children, "recovery")?
+                .map(|n| src.bool_value(n))
+                .transpose()?
+                .unwrap_or(true),
         })
     }
 }
@@ -145,18 +153,25 @@ pub fn ensure_path(path: &str) {
     }
 }
 
-fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> {
+/// restic exits 3 when it saved a snapshot but could not read some source
+/// files (permission-protected folders, files changing mid-backup). The
+/// snapshot is valid, so that is a warning, not a failed backup.
+const RESTIC_PARTIAL_BACKUP: i32 = 3;
+
+fn run_status(command_name: &str, args: &[String]) -> Result<ExitStatus, String> {
     Command::new(command_name)
-        .args(&args)
+        .args(args)
         .status()
         .map_err(|e| format!("failed to run {command_name}: {e}"))
-        .and_then(|s| {
-            if s.success() {
-                Ok(())
-            } else {
-                Err(format!("{command_name} failed with status {s}"))
-            }
-        })
+}
+
+fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> {
+    let status = run_status(command_name, &args)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{command_name} failed with status {status}"))
+    }
 }
 
 /// Syncs one remote. A missing B2 credentials profile triggers authorization;
@@ -189,9 +204,37 @@ fn sync_remote(
         .map_err(|e| format!("sync to {} failed: {e}", remote.url))
 }
 
+/// How syncing one remote went; `error` is `None` on success.
+#[derive(Debug, Clone)]
+pub struct SyncResult {
+    pub url: String,
+    pub error: Option<String>,
+    /// What happened to the remote's recovery copy; `None` if the sync failed
+    /// and so it wasn't attempted.
+    pub recovery: Option<crate::recovery::Outcome>,
+}
+
+/// What a [`Backup::run`] actually did.
+#[derive(Debug, Default)]
+pub struct RunOutcome {
+    pub dry_run: bool,
+    pub syncs: Vec<SyncResult>,
+}
+
+impl RunOutcome {
+    pub fn failed_syncs(&self) -> usize {
+        self.syncs.iter().filter(|s| s.error.is_some()).count()
+    }
+}
+
 impl Backup {
     pub(crate) fn remotes(&self) -> &[Remote] {
         &self.remotes
+    }
+
+    /// The task's own `dry-run true` override.
+    pub fn dry_run(&self) -> bool {
+        self.dry_run.unwrap_or(false)
     }
 
     pub fn repo(&self) -> &str {
@@ -231,7 +274,19 @@ impl Backup {
             args.push("--dry-run".to_string());
         }
 
-        execute_command("restic", args)
+        let status = run_status("restic", &args)?;
+        match status.code() {
+            Some(0) => Ok(()),
+            Some(RESTIC_PARTIAL_BACKUP) => {
+                eprintln!(
+                    "warning: some files could not be read and were skipped (restic exit code 3); \
+                     the snapshot was still saved, so continuing. On macOS, grant your terminal \
+                     (or the scheduler) Full Disk Access to include protected folders."
+                );
+                Ok(())
+            }
+            _ => Err(format!("restic failed with status {status}")),
+        }
     }
 
     fn check(&self) -> Result<(), String> {
@@ -264,22 +319,56 @@ impl Backup {
         execute_command("restic", args)
     }
 
-    /// Syncs every remote, continuing past failures. Returns how many failed.
-    fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) -> usize {
+    /// Syncs every remote, continuing past failures. Unless this is a dry run,
+    /// each successful sync is followed by bringing the remote's recovery copy
+    /// up to date (see [`crate::recovery`]); a problem there is reported but
+    /// never fails the sync.
+    fn sync_remotes(
+        &self,
+        task_name: &str,
+        config: &VivoConfig,
+        dry_run: bool,
+        credentials: &HashMap<String, HashMap<String, String>>,
+    ) -> Vec<SyncResult> {
+        use crate::recovery::Outcome;
+
         let local_repo = expand_env_vars(&self.repo);
         let mut creds_cache = credentials.clone();
-        let mut failed = 0;
+        let state = crate::state::State::load();
+        let mut source = crate::recovery::Source::new(&config.get_config_path(), &config.get_secrets_path());
 
-        for remote in &self.remotes {
-            if let Err(e) = sync_remote(remote, &local_repo, dry_run, &mut creds_cache) {
-                eprintln!("error: {e}");
-                failed += 1;
-            }
-        }
-        failed
+        self.remotes
+            .iter()
+            .map(|remote| {
+                let error = sync_remote(remote, &local_repo, dry_run, &mut creds_cache).err();
+                if let Some(e) = &error {
+                    eprintln!("error: {e}");
+                }
+                if error.is_some() || dry_run {
+                    return SyncResult { url: remote.url.clone(), error, recovery: None };
+                }
+
+                let previous = state
+                    .tasks
+                    .get(task_name)
+                    .and_then(|t| t.remotes.get(&remote.url))
+                    .and_then(|r| r.recovery.as_ref()?.hash());
+                let outcome =
+                    crate::recovery::sync_to_remote(remote, &creds_cache[&remote.credentials], &mut source, previous);
+                match &outcome {
+                    Outcome::Uploaded(_) => ui::info(&format!("Updated the recovery copy next to {}", remote.url)),
+                    Outcome::Skipped(why) => eprintln!("warning: no recovery copy for {}: {why}", remote.url),
+                    Outcome::Failed(why) => {
+                        eprintln!("warning: could not update the recovery copy for {}: {why}", remote.url)
+                    }
+                    Outcome::Unchanged | Outcome::Disabled => {}
+                }
+                SyncResult { url: remote.url.clone(), error: None, recovery: Some(outcome) }
+            })
+            .collect()
     }
 
-    fn is_local_repo(repo: &str) -> bool {
+    pub(crate) fn is_local_repo(repo: &str) -> bool {
         !repo.contains(':')
             || repo.starts_with('/')
             || repo.starts_with('.')
@@ -301,14 +390,16 @@ impl Backup {
         Ok(())
     }
 
-    /// Runs the backup phases. `Ok(n)` means the backup succeeded but `n`
-    /// remotes failed to sync; `Err` means a phase before syncing failed.
+    /// Runs the backup phases. `Ok` carries what happened (including any
+    /// remotes that failed to sync); `Err` means a phase before syncing failed.
     pub fn run(
         &self,
         config: &VivoConfig,
+        task_name: &str,
         credentials: &HashMap<String, HashMap<String, String>>,
-    ) -> Result<usize, String> {
-        let dry_run = config.dry_run || self.dry_run.unwrap_or(false);
+    ) -> Result<RunOutcome, String> {
+        let dry_run = config.dry_run || self.dry_run();
+        let mut outcome = RunOutcome { dry_run, ..RunOutcome::default() };
 
         if config.start_step <= Step::Backup {
             if dry_run {
@@ -317,7 +408,7 @@ impl Backup {
                     println!("[dry-run] restic repository {repo} does not exist yet.");
                     println!("[dry-run] a real run would initialize it, then back up {}.",
                         self.directory.as_deref().unwrap_or("the configured files"));
-                    return Ok(0);
+                    return Ok(outcome);
                 }
             } else {
                 self.ensure_local_repo_init()?;
@@ -331,9 +422,9 @@ impl Backup {
             self.forget(dry_run)?;
         }
         if config.start_step <= Step::Sync {
-            return Ok(self.sync_remotes(dry_run, credentials));
+            outcome.syncs = self.sync_remotes(task_name, config, dry_run, credentials);
         }
-        Ok(0)
+        Ok(outcome)
     }
 }
 
@@ -341,6 +432,44 @@ impl Backup {
 mod tests {
     use super::expand_env_vars;
     use crate::backup_config::BackupConfig;
+
+    /// Runs `Backup::backup` against a fake `restic` that exits with `code`.
+    #[cfg(unix)]
+    fn backup_with_fake_restic(code: i32) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("restic");
+        std::fs::write(&fake, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config = BackupConfig::parse(
+            "test.kdl",
+            "default-task \"t\"\ntasks { task \"t\" { backup { repo \"/tmp/r\"\ndirectory \"/tmp/d\" } } }",
+        )
+        .unwrap();
+        let backup = config.tasks[0].backup().unwrap();
+
+        let original = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original}", dir.path().display()));
+        let result = backup.backup(false);
+        std::env::set_var("PATH", original);
+        result
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_treats_restic_exit_3_as_warning() {
+        assert!(backup_with_fake_restic(3).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_still_fails_on_other_restic_errors() {
+        assert!(backup_with_fake_restic(1).is_err());
+        assert!(backup_with_fake_restic(0).is_ok());
+    }
 
     #[test]
     fn expand_env_vars_expands_leading_tilde() {

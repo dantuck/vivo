@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use super::RemoteBackend;
+use super::objects::S3Store;
+use super::{recovery_sibling, ObjectStore, RemoteBackend, AWS_CREDENTIALS};
 
 pub struct S3Backend {
     url: String,
@@ -16,9 +17,42 @@ impl S3Backend {
     }
 }
 
+impl S3Backend {
+    /// `(endpoint, bucket, path)` of `s3:[scheme://]host/bucket[/path]` — the
+    /// scheme defaults to https, as restic's does.
+    fn parts(&self) -> Result<(String, String, String), String> {
+        let rest = self.url.strip_prefix("s3:").unwrap_or(&self.url);
+        let (scheme, after) = rest.split_once("://").unwrap_or(("https", rest));
+        let (host, path) = after
+            .split_once('/')
+            .ok_or_else(|| format!("s3 URL has no bucket: '{}'", self.url))?;
+        let (bucket, sub) = path.split_once('/').unwrap_or((path, ""));
+        if bucket.is_empty() {
+            return Err(format!("s3 URL has no bucket: '{}'", self.url));
+        }
+        Ok((format!("{scheme}://{host}"), bucket.to_string(), sub.trim_matches('/').to_string()))
+    }
+}
+
 impl RemoteBackend for S3Backend {
     fn name(&self) -> &str {
         "s3"
+    }
+
+    fn restic_url(&self) -> String {
+        self.url.clone()
+    }
+
+    fn credential_vars(&self) -> [(&'static str, &'static str); 2] {
+        AWS_CREDENTIALS
+    }
+
+    /// `bucket/path` keeps it in `path.vivo-recovery/` (or `vivo-recovery/` for a
+    /// repository at the bucket root; `restic copy` never deletes there).
+    fn recovery_store(&self) -> Result<Box<dyn ObjectStore>, String> {
+        let (endpoint, bucket, path) = self.parts()?;
+        let prefix = if path.is_empty() { "vivo-recovery".to_string() } else { recovery_sibling(&path) };
+        Ok(Box::new(S3Store::new(&endpoint, &bucket, &prefix, false)))
     }
 
     fn check_installed(&self) -> Result<(), String> {
@@ -77,6 +111,18 @@ mod tests {
     fn accepts_aws_s3_url() {
         let s = S3Backend::from_url("s3:https://s3.amazonaws.com/my-bucket").unwrap();
         assert_eq!(s.name(), "s3");
+    }
+
+    #[test]
+    fn recovery_copy_location_with_and_without_scheme() {
+        let store = |url| S3Backend::from_url(url).unwrap().recovery_store();
+        assert_eq!(store("s3:https://h/bkt").unwrap().describe(), "s3://bkt/vivo-recovery (https://h)");
+        assert_eq!(store("s3:http://h:9000/bkt/p").unwrap().describe(), "s3://bkt/p.vivo-recovery (http://h:9000)");
+        assert_eq!(
+            store("s3:s3.amazonaws.com/bkt/p").unwrap().describe(),
+            "s3://bkt/p.vivo-recovery (https://s3.amazonaws.com)"
+        );
+        assert!(store("s3:https://h").is_err());
     }
 
     #[test]

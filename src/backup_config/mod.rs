@@ -2,6 +2,7 @@ pub mod backup;
 pub(crate) mod kdl_decode;
 pub(crate) mod task;
 pub use kdl_decode::ConfigError;
+pub use task::Task as BackupTask;
 
 use std::collections::HashMap;
 use std::path::Path;

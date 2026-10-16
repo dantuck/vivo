@@ -1,8 +1,13 @@
 mod config;
 mod init;
 mod onboard;
+mod recover;
 mod remote;
+mod restore;
+mod schedule;
 mod secrets;
+mod snapshots;
+mod status;
 mod task;
 mod util;
 
@@ -13,6 +18,11 @@ use vivo::{build_cli, config_path_from, secrets_path_from, VivoConfig};
 use config::{cmd_config_edit, cmd_config_init, cmd_config_show};
 use init::cmd_init;
 use onboard::{ensure_onboarded, run_backup};
+use recover::cmd_recover;
+use restore::cmd_restore;
+use schedule::{cmd_schedule_add, cmd_schedule_remove, cmd_schedule_status};
+use snapshots::cmd_snapshots;
+use status::cmd_status;
 use remote::{cmd_remote_add, cmd_remote_list, cmd_remote_remove, cmd_remote_test};
 use secrets::{
     cmd_secrets_edit, cmd_secrets_import_b2, cmd_secrets_import_s3, cmd_secrets_init,
@@ -105,6 +115,31 @@ fn main() {
                 Some(("remove", args)) => finish(cmd_remote_remove(&config_path, args)),
                 _ => unreachable!(),
             }
+            return;
+        }
+        Some(("schedule", sub)) => {
+            match sub.subcommand() {
+                Some(("add", args)) => finish(cmd_schedule_add(&config_path, args)),
+                Some(("remove", _)) => finish(cmd_schedule_remove()),
+                Some(("status", _)) | None => finish(cmd_schedule_status()),
+                _ => unreachable!(),
+            }
+            return;
+        }
+        Some(("status", args)) => {
+            finish(cmd_status(&config_path, &secrets_path, args));
+            return;
+        }
+        Some(("snapshots", args)) => {
+            finish(cmd_snapshots(&config_path, &secrets_path, args));
+            return;
+        }
+        Some(("recover", args)) => {
+            finish(cmd_recover(&config_path, &secrets_path, args));
+            return;
+        }
+        Some(("restore", args)) => {
+            finish(cmd_restore(&config_path, &secrets_path, args));
             return;
         }
         Some(("mount", sub)) => {
