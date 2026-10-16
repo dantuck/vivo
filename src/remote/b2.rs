@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use super::RemoteBackend;
 
@@ -32,35 +31,18 @@ impl B2Backend {
 impl B2Backend {
     fn execute_sync(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
         let remote_url = format!("b2://{}/{}", self.bucket, self.path);
-        let mut child = Command::new("b2")
-            .args([
-                "sync",
-                "--delete",
-                "--replace-newer",
-                "--compare-versions",
-                "size",
-                local_repo,
-                &remote_url,
-            ])
-            .envs(env)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to run b2: {e}"))?;
-
-        let stderr_reader = BufReader::new(child.stderr.take().unwrap());
-        let stderr_thread = std::thread::spawn(move || {
-            let mut collected = String::new();
-            for line in stderr_reader.lines().map_while(Result::ok) {
-                eprintln!("{line}");
-                collected.push_str(&line);
-                collected.push('\n');
-            }
-            collected
-        });
-
-        let status = child.wait().map_err(|e| format!("failed to wait for b2: {e}"))?;
-        let stderr = stderr_thread.join().unwrap_or_default();
+        let mut cmd = Command::new("b2");
+        cmd.args([
+            "sync",
+            "--delete",
+            "--replace-newer",
+            "--compare-versions",
+            "size",
+            local_repo,
+            &remote_url,
+        ])
+        .envs(env);
+        let (status, stderr) = super::run_streaming(cmd, "b2")?;
 
         if !status.success() {
             return Err(format!("b2 sync to {remote_url} failed: {stderr}"));

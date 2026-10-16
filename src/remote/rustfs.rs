@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 use super::RemoteBackend;
@@ -133,29 +132,9 @@ impl RustfsBackend {
         args: &[&str],
         env: &HashMap<String, String>,
     ) -> Result<(), String> {
-        let mut child = Command::new(cmd_name)
-            .args(args)
-            .envs(env)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to run {cmd_name}: {e}"))?;
-
-        let stderr_reader = BufReader::new(child.stderr.take().unwrap());
-        let stderr_thread = std::thread::spawn(move || {
-            let mut collected = String::new();
-            for line in stderr_reader.lines().map_while(Result::ok) {
-                eprintln!("{line}");
-                collected.push_str(&line);
-                collected.push('\n');
-            }
-            collected
-        });
-
-        let status = child
-            .wait()
-            .map_err(|e| format!("failed to wait for {cmd_name}: {e}"))?;
-        let stderr = stderr_thread.join().unwrap_or_default();
+        let mut cmd = Command::new(cmd_name);
+        cmd.args(args).envs(env);
+        let (status, stderr) = super::run_streaming(cmd, cmd_name)?;
 
         if !status.success() {
             return Err(format!("{cmd_name} sync to {} failed: {stderr}", self.endpoint));
