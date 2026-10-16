@@ -14,6 +14,41 @@ pub struct RemoteSpec {
     pub mc_limit_upload: Option<String>,
 }
 
+fn parse(kdl: &str) -> Result<KdlDocument, String> {
+    kdl.parse().map_err(|e| format!("KDL parse error: {e}"))
+}
+
+fn find_task<'a>(doc: &'a mut KdlDocument, name: &str) -> Result<&'a mut KdlNode, String> {
+    doc.get_mut("tasks")
+        .ok_or("config missing 'tasks' block")?
+        .ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "task" && first_arg(n) == Some(name))
+        .ok_or_else(|| format!("task '{name}' not found"))
+}
+
+fn find_backup<'a>(task: &'a mut KdlNode, task_name: &str) -> Result<&'a mut KdlNode, String> {
+    task.ensure_children()
+        .nodes_mut()
+        .iter_mut()
+        .find(|n| n.name().value() == "backup")
+        .ok_or_else(|| {
+            format!("task '{task_name}' has no backup block — add one with `vivo config edit`")
+        })
+}
+
+/// Reads the config at `path`, applies one of the editing functions in this
+/// module to its text, and writes the result back.
+pub fn update_file(
+    path: &str,
+    edit: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    let kdl = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read config '{path}': {e}"))?;
+    std::fs::write(path, edit(&kdl)?).map_err(|e| format!("could not write config: {e}"))
+}
+
 pub struct EditTaskSpec {
     pub name: String,
     pub description: Option<String>,
@@ -110,7 +145,7 @@ fn upsert_or_remove_child(doc: &mut KdlDocument, name: &str, value: Option<&str>
 }
 
 pub fn add_task(kdl: &str, spec: TaskSpec) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
     let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
     let children = tasks.ensure_children();
@@ -146,7 +181,7 @@ pub fn add_task(kdl: &str, spec: TaskSpec) -> Result<String, String> {
 }
 
 pub fn remove_task(kdl: &str, name: &str) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
     // Read default-task BEFORE any mutable borrow of tasks
     let default_task = doc
@@ -191,7 +226,7 @@ pub fn edit_task(kdl: &str, old_name: &str, spec: EditTaskSpec) -> Result<String
         return Err("task name cannot be empty".to_string());
     }
 
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
     // Check for duplicate name before any mutable borrow
     if spec.name != old_name {
@@ -304,7 +339,7 @@ pub fn edit_task(kdl: &str, old_name: &str, spec: EditTaskSpec) -> Result<String
 
 /// Names of tasks that have a `backup` block (the only tasks a remote can be added to).
 pub fn backup_task_names(kdl: &str) -> Result<Vec<String>, String> {
-    let doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let doc = parse(kdl)?;
     let tasks = doc
         .get("tasks")
         .and_then(|n| n.children())
@@ -322,26 +357,11 @@ pub fn backup_task_names(kdl: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn add_remote(kdl: &str, task_name: &str, spec: RemoteSpec) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let task = find_task(&mut doc, task_name)?;
 
-    let backup = task
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "backup")
-        .ok_or_else(|| {
-            format!(
-                "task '{task_name}' has no backup block — add one with `vivo config edit`"
-            )
-        })?;
+    let backup = find_backup(task, task_name)?;
 
     let backup_children = backup.ensure_children();
 
@@ -383,22 +403,11 @@ pub fn edit_remote(
     if spec.url.is_empty() {
         return Err("remote URL cannot be empty".to_string());
     }
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let task = find_task(&mut doc, task_name)?;
 
-    let backup = task
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "backup")
-        .ok_or_else(|| format!("task '{task_name}' has no backup block — add one with `vivo config edit`"))?;
+    let backup = find_backup(task, task_name)?;
 
     let remote = backup
         .ensure_children()
@@ -422,22 +431,11 @@ pub fn edit_remote(
 }
 
 pub fn remove_remote(kdl: &str, task_name: &str, url: &str) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let task = find_task(&mut doc, task_name)?;
 
-    let backup = task
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "backup")
-        .ok_or_else(|| format!("task '{task_name}' has no backup block"))?;
+    let backup = find_backup(task, task_name)?;
 
     let backup_children = backup.ensure_children();
     let before = backup_children.nodes().len();
@@ -453,14 +451,8 @@ pub fn remove_remote(kdl: &str, task_name: &str, url: &str) -> Result<String, St
 }
 
 pub fn add_call(kdl: &str, task_name: &str, call_name: &str) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
     let children = task.ensure_children();
     if children
         .nodes()
@@ -474,14 +466,8 @@ pub fn add_call(kdl: &str, task_name: &str, call_name: &str) -> Result<String, S
 }
 
 pub fn remove_call(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
     let children = task.ensure_children();
     let doc_idx = children
         .nodes()
@@ -511,7 +497,7 @@ pub fn move_call_down(kdl: &str, task_name: &str, index: usize) -> Result<String
 }
 
 pub fn set_default_task(kdl: &str, name: &str) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
+    let mut doc = parse(kdl)?;
 
     let task_exists = doc
         .get("tasks")
@@ -541,14 +527,8 @@ pub fn set_default_task(kdl: &str, name: &str) -> Result<String, String> {
 }
 
 fn swap_calls(kdl: &str, task_name: &str, a: usize, b: usize) -> Result<String, String> {
-    let mut doc: KdlDocument = kdl.parse().map_err(|e| format!("KDL parse error: {e}"))?;
-    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?;
-    let task = tasks
-        .ensure_children()
-        .nodes_mut()
-        .iter_mut()
-        .find(|n| n.name().value() == "task" && first_arg(n) == Some(task_name))
-        .ok_or_else(|| format!("task '{task_name}' not found"))?;
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
     let children = task.ensure_children();
     let positions: Vec<usize> = children
         .nodes()
