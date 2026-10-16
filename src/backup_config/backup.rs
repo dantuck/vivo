@@ -48,7 +48,7 @@ pub struct Backup {
     directory: Option<String>,
     files_from: Option<String>,
     remotes: Vec<Remote>,
-    retention: Option<BackupRetention>,
+    retention: BackupRetention,
     dry_run: Option<bool>,
 }
 
@@ -73,7 +73,8 @@ impl Backup {
             retention: src
                 .optional(children, "retention")?
                 .map(|n| BackupRetention::decode(src, n))
-                .transpose()?,
+                .transpose()?
+                .unwrap_or_default(),
             dry_run: src
                 .optional(children, "dry-run")?
                 .map(|n| src.bool_value(n))
@@ -82,26 +83,34 @@ impl Backup {
     }
 }
 
+/// How many snapshots `restic forget` keeps per period.
 #[derive(Debug)]
 struct BackupRetention {
-    daily: Option<i16>,
-    weekly: Option<i16>,
-    monthly: Option<i16>,
-    yearly: Option<i16>,
+    daily: i16,
+    weekly: i16,
+    monthly: i16,
+    yearly: i16,
+}
+
+impl Default for BackupRetention {
+    fn default() -> Self {
+        BackupRetention { daily: 7, weekly: 5, monthly: 12, yearly: 2 }
+    }
 }
 
 impl BackupRetention {
     fn decode(src: &Source, node: &KdlNode) -> Result<Self, ConfigError> {
         let children = src.children(node);
         src.only(children, &["daily", "weekly", "monthly", "yearly"])?;
-        let count = |name: &str| -> Result<Option<i16>, ConfigError> {
-            src.optional(children, name)?.map(|n| src.int_value(n)).transpose()
+        let defaults = BackupRetention::default();
+        let count = |name: &str, default: i16| -> Result<i16, ConfigError> {
+            Ok(src.optional(children, name)?.map(|n| src.int_value(n)).transpose()?.unwrap_or(default))
         };
         Ok(BackupRetention {
-            daily: count("daily")?,
-            weekly: count("weekly")?,
-            monthly: count("monthly")?,
-            yearly: count("yearly")?,
+            daily: count("daily", defaults.daily)?,
+            weekly: count("weekly", defaults.weekly)?,
+            monthly: count("monthly", defaults.monthly)?,
+            yearly: count("yearly", defaults.yearly)?,
         })
     }
 }
@@ -128,6 +137,14 @@ pub fn expand_env_vars(path: &str) -> String {
     }
 }
 
+/// Creates the directory `path` (after env-var expansion), ignoring failures.
+pub fn ensure_path(path: &str) {
+    let expanded = expand_env_vars(path);
+    if !expanded.is_empty() {
+        let _ = fs::create_dir_all(&expanded);
+    }
+}
+
 fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> {
     Command::new(command_name)
         .args(&args)
@@ -140,6 +157,36 @@ fn execute_command(command_name: &str, args: Vec<String>) -> Result<(), String> 
                 Err(format!("{command_name} failed with status {s}"))
             }
         })
+}
+
+/// Syncs one remote. A missing B2 credentials profile triggers authorization;
+/// any other missing profile is an error. New B2 credentials go into `creds_cache`.
+fn sync_remote(
+    remote: &Remote,
+    local_repo: &str,
+    dry_run: bool,
+    creds_cache: &mut HashMap<String, HashMap<String, String>>,
+) -> Result<(), String> {
+    if !creds_cache.contains_key(&remote.credentials) {
+        if !remote.url.starts_with("b2:") {
+            return Err(format!(
+                "credentials profile '{}' not found in secrets — skipping remote {}",
+                remote.credentials, remote.url
+            ));
+        }
+        eprintln!("\n[!] B2 credentials not found — starting authorization...\n");
+        let new_creds = crate::import_b2_credentials(&crate::config::secrets_path_from())
+            .map_err(|e| format!("re-authorization failed: {e} — skipping remote {}", remote.url))?;
+        creds_cache.insert(remote.credentials.clone(), new_creds);
+    }
+
+    let backend = crate::remote::from_remote(remote)?;
+    backend.check_installed()?;
+
+    ui::info(&format!("Syncing to {}", remote.url));
+    backend
+        .sync(local_repo, dry_run, &creds_cache[&remote.credentials])
+        .map_err(|e| format!("sync to {} failed: {e}", remote.url))
 }
 
 impl Backup {
@@ -196,25 +243,19 @@ impl Backup {
 
     fn forget(&self, dry_run: bool) -> Result<(), String> {
         let r = &self.retention;
-        let daily = r.as_ref().and_then(|r| r.daily).unwrap_or(7);
-        let weekly = r.as_ref().and_then(|r| r.weekly).unwrap_or(5);
-        let monthly = r.as_ref().and_then(|r| r.monthly).unwrap_or(12);
-        let yearly = r.as_ref().and_then(|r| r.yearly).unwrap_or(2);
-
-        let mut args = vec![
-            "forget".to_string(),
-            "-r".to_string(),
-            expand_env_vars(&self.repo),
-            "--keep-daily".to_string(),
-            daily.to_string(),
-            "--keep-weekly".to_string(),
-            weekly.to_string(),
-            "--keep-monthly".to_string(),
-            monthly.to_string(),
-            "--keep-yearly".to_string(),
-            yearly.to_string(),
-            "--prune".to_string(),
-        ];
+        let mut args: Vec<String> = ["forget", "-r", &expand_env_vars(&self.repo)]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        for (flag, keep) in [
+            ("--keep-daily", r.daily),
+            ("--keep-weekly", r.weekly),
+            ("--keep-monthly", r.monthly),
+            ("--keep-yearly", r.yearly),
+        ] {
+            args.extend([flag.to_string(), keep.to_string()]);
+        }
+        args.push("--prune".to_string());
 
         if dry_run {
             args.push("--dry-run".to_string());
@@ -226,53 +267,12 @@ impl Backup {
     /// Syncs every remote, continuing past failures. Returns how many failed.
     fn sync_remotes(&self, dry_run: bool, credentials: &HashMap<String, HashMap<String, String>>) -> usize {
         let local_repo = expand_env_vars(&self.repo);
-        let mut creds_cache: HashMap<String, HashMap<String, String>> = credentials.clone();
+        let mut creds_cache = credentials.clone();
         let mut failed = 0;
 
         for remote in &self.remotes {
-            if !creds_cache.contains_key(&remote.credentials) {
-                if remote.url.starts_with("b2:") {
-                    eprintln!("\n[!] B2 credentials not found — starting authorization...\n");
-                    let secrets_path = crate::config::secrets_path_from();
-                    match crate::import_b2_credentials(&secrets_path) {
-                        Ok(new_creds) => {
-                            creds_cache.insert(remote.credentials.clone(), new_creds);
-                        }
-                        Err(e) => {
-                            eprintln!("error: re-authorization failed: {e} — skipping remote {}", remote.url);
-                            failed += 1;
-                            continue;
-                        }
-                    }
-                } else {
-                    eprintln!(
-                        "error: credentials profile '{}' not found in secrets — skipping remote {}",
-                        remote.credentials, remote.url
-                    );
-                    failed += 1;
-                    continue;
-                }
-            }
-            let creds = creds_cache.get(&remote.credentials).unwrap();
-
-            let backend = match crate::remote::from_remote(remote) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    failed += 1;
-                    continue;
-                }
-            };
-
-            if let Err(e) = backend.check_installed() {
+            if let Err(e) = sync_remote(remote, &local_repo, dry_run, &mut creds_cache) {
                 eprintln!("error: {e}");
-                failed += 1;
-                continue;
-            }
-
-            ui::info(&format!("Syncing to {}", remote.url));
-            if let Err(e) = backend.sync(&local_repo, dry_run, creds) {
-                eprintln!("error: sync to {} failed: {e}", remote.url);
                 failed += 1;
             }
         }

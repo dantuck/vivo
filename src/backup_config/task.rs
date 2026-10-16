@@ -4,7 +4,7 @@ use log::info;
 
 use kdl::KdlNode;
 
-use crate::backup_config::backup::Backup;
+use crate::backup_config::backup::{Backup, Remote};
 use crate::backup_config::kdl_decode::{named, ConfigError, Source};
 use crate::config::VivoConfig;
 use crate::ui;
@@ -14,18 +14,8 @@ pub struct Task {
     pub name: String,
     description: Option<String>,
     backup: Option<Backup>,
-    commands: Vec<CommandItem>,
-    calls: Vec<CallRef>,
-}
-
-#[derive(Debug)]
-struct CommandItem {
-    cmd: String,
-}
-
-#[derive(Debug)]
-struct CallRef {
-    name: String,
+    commands: Vec<String>,
+    calls: Vec<String>,
 }
 
 impl Task {
@@ -43,10 +33,10 @@ impl Task {
                 .map(|n| Backup::decode(src, n))
                 .transpose()?,
             commands: named(children, "command")
-                .map(|n| src.leaf_argument(n).map(|cmd| CommandItem { cmd }))
+                .map(|n| src.leaf_argument(n))
                 .collect::<Result<_, _>>()?,
             calls: named(children, "calls")
-                .map(|n| src.leaf_argument(n).map(|name| CallRef { name }))
+                .map(|n| src.leaf_argument(n))
                 .collect::<Result<_, _>>()?,
         })
     }
@@ -93,38 +83,17 @@ impl Task {
         self.backup.as_ref()
     }
 
+    /// `(url, credentials profile)` of each remote of the task's backup.
     pub fn backup_remotes(&self) -> Vec<(&str, &str)> {
-        match &self.backup {
-            Some(b) => b.remotes().iter().map(|r| (r.url.as_str(), r.credentials.as_str())).collect(),
-            None => vec![],
-        }
+        self.remotes().iter().map(|r| (r.url.as_str(), r.credentials.as_str())).collect()
     }
 
-    pub fn backup_remote_entries(&self) -> Vec<&crate::backup_config::backup::Remote> {
-        match &self.backup {
-            Some(b) => b.remotes().iter().collect(),
-            None => vec![],
-        }
+    pub fn remotes(&self) -> &[Remote] {
+        self.backup.as_ref().map_or(&[], |b| b.remotes())
     }
 
-    pub fn backup_repo(&self) -> Option<&str> {
-        self.backup.as_ref().map(|b| b.repo())
-    }
-
-    pub fn backup_directory(&self) -> Option<&str> {
-        self.backup.as_ref().and_then(|b| b.directory())
-    }
-
-    pub fn backup_exclude_file(&self) -> Option<&str> {
-        self.backup.as_ref().and_then(|b| b.exclude_file())
-    }
-
-    pub fn backup_files_from(&self) -> Option<&str> {
-        self.backup.as_ref().and_then(|b| b.files_from())
-    }
-
-    pub fn call_names(&self) -> Vec<&str> {
-        self.calls.iter().map(|c| c.name.as_str()).collect()
+    pub fn call_names(&self) -> &[String] {
+        &self.calls
     }
 
     pub fn description(&self) -> Option<&str> {
@@ -172,11 +141,11 @@ impl Task {
         }
 
         for command in &self.commands {
-            run_command(&command.cmd);
+            run_command(command);
         }
 
         for call in &self.calls {
-            ok &= run_call(&call.name, seen, config, tasks, credentials);
+            ok &= run_call(call, seen, config, tasks, credentials);
         }
         ok
     }
