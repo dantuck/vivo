@@ -45,19 +45,32 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// Queries GitHub for the latest release. Returns the version string (without
-/// 'v' prefix) if it is newer than the running binary. Network errors are
-/// silently ignored.
-pub fn check_update_available() -> Option<String> {
-    let releases = self_update::backends::github::ReleaseList::configure()
+/// Returns the newest release that has a downloadable asset for `target`.
+/// A release is published before CI finishes attaching its binaries, so the
+/// newest release is not necessarily installable yet.
+fn latest_installable<'a>(
+    releases: &'a [self_update::update::Release],
+    target: &str,
+) -> Option<&'a self_update::update::Release> {
+    releases
+        .iter()
+        .find(|r| r.assets.iter().any(|a| a.name.contains(target)))
+}
+
+fn fetch_releases() -> Result<Vec<self_update::update::Release>, self_update::errors::Error> {
+    self_update::backends::github::ReleaseList::configure()
         .repo_owner(GITHUB_REPO_OWNER)
         .repo_name(GITHUB_REPO_NAME)
-        .build()
-        .ok()?
+        .build()?
         .fetch()
-        .ok()?;
+}
 
-    let latest = releases.first()?;
+/// Queries GitHub for the latest installable release. Returns the version
+/// string (without 'v' prefix) if it is newer than the running binary. Network
+/// errors are silently ignored.
+pub fn check_update_available() -> Option<String> {
+    let releases = fetch_releases().ok()?;
+    let latest = latest_installable(&releases, self_update::get_target())?;
     let latest_version = latest.version.trim_start_matches('v').to_string();
     let current = env!("CARGO_PKG_VERSION");
 
@@ -90,13 +103,14 @@ pub fn print_update_notice(latest: &str) {
 /// Downloads and applies the latest release. If dry_run is true, prints what
 /// would happen without replacing the binary.
 pub fn apply_update(dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let releases = fetch_releases()?;
+    let Some(latest) = latest_installable(&releases, self_update::get_target()) else {
+        println!("No installable release found for this platform yet; try again shortly.");
+        return Ok(());
+    };
+    let tag = format!("v{}", latest.version.trim_start_matches('v'));
+
     if dry_run {
-        let releases = self_update::backends::github::ReleaseList::configure()
-            .repo_owner(GITHUB_REPO_OWNER)
-            .repo_name(GITHUB_REPO_NAME)
-            .build()?
-            .fetch()?;
-        let latest = releases.first().ok_or("no releases found")?;
         println!(
             "[dry-run] would update vivo v{} → v{}",
             env!("CARGO_PKG_VERSION"),
@@ -109,6 +123,7 @@ pub fn apply_update(dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
         .repo_owner(GITHUB_REPO_OWNER)
         .repo_name(GITHUB_REPO_NAME)
         .bin_name("vivo")
+        .target_version_tag(&tag)
         .show_download_progress(true)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()?
@@ -173,5 +188,50 @@ mod tests {
     #[test]
     fn is_newer_returns_false_for_older() {
         assert!(!is_newer("0.1.0", "0.2.0"));
+    }
+
+    fn release(version: &str, assets: &[&str]) -> self_update::update::Release {
+        self_update::update::Release {
+            name: format!("v{version}"),
+            version: version.to_string(),
+            date: String::new(),
+            body: None,
+            assets: assets
+                .iter()
+                .map(|n| self_update::update::ReleaseAsset {
+                    download_url: String::new(),
+                    name: n.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn latest_installable_skips_release_without_assets() {
+        let releases = vec![
+            release("0.16.0", &[]),
+            release("0.15.1", &["vivo-v0.15.1-aarch64-apple-darwin.tar.gz"]),
+        ];
+        let found = latest_installable(&releases, "aarch64-apple-darwin").unwrap();
+        assert_eq!(found.version, "0.15.1");
+    }
+
+    #[test]
+    fn latest_installable_prefers_newest_with_asset() {
+        let releases = vec![
+            release("0.16.0", &["vivo-v0.16.0-aarch64-apple-darwin.tar.gz"]),
+            release("0.15.1", &["vivo-v0.15.1-aarch64-apple-darwin.tar.gz"]),
+        ];
+        let found = latest_installable(&releases, "aarch64-apple-darwin").unwrap();
+        assert_eq!(found.version, "0.16.0");
+    }
+
+    #[test]
+    fn latest_installable_none_when_target_missing() {
+        let releases = vec![release(
+            "0.16.0",
+            &["vivo-v0.16.0-x86_64-unknown-linux-musl.tar.gz"],
+        )];
+        assert!(latest_installable(&releases, "aarch64-apple-darwin").is_none());
     }
 }
