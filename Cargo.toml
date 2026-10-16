@@ -40,8 +40,4 @@ lto = "thin"
 
 [[bin]]
 name = "vivo"
-path = "src/bin/vivo.rs"
-test = true
-bench = true
-doc = true
-harness = true
+path = "src/bin/vivo/main.rs"

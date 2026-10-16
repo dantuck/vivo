@@ -18,7 +18,7 @@ cargo test <test_name>   # run a single test
 Vivo is a CLI wrapper around `restic` that orchestrates backups with sync to multiple remote backends. It requires `restic`, `sops`, and `age` to be installed; `b2` CLI is needed for Backblaze B2 remotes.
 
 **Execution flow:**
-1. `src/bin/vivo.rs` — entry point; dispatches subcommands (`init`, `config`, `secrets`) or runs the backup flow
+1. `src/bin/vivo/main.rs` — entry point; dispatches subcommands or runs the backup flow. Each subcommand lives in a sibling module (`init`, `config`, `secrets`, `task`, `remote`, `onboard`); `util.rs` holds shared helpers and `Stop`/`CmdResult` (subcommands return `Err(Stop::Cancelled)` for Esc/Ctrl-C, which exits 0 quietly)
 2. `src/config.rs` — `VivoConfig` (CLI args via clap) + `Secrets` (YAML); `build_cli()` defines the full clap command tree; path resolution via env vars
 3. `src/backup_config/mod.rs` — loads KDL config; decrypts secrets via `sops -d`; sets `RESTIC_PASSWORD` env var; returns `(BackupConfig, Secrets)` tuple
 4. `src/backup_config/task.rs` — `Task` execution with `calls` (named task references) and `commands` (shell commands); circular-reference detection
