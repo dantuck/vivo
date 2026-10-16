@@ -7,7 +7,9 @@ pub use rustfs::RustfsBackend;
 pub use s3::S3Backend;
 
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::process::{Command, ExitStatus, Stdio};
 
 pub trait RemoteBackend {
     fn name(&self) -> &str;
@@ -44,6 +46,31 @@ pub fn s3_sync_tool_installed() -> bool {
     rustfs::detect_tool().is_ok()
 }
 
+/// Runs `cmd` with stdout inherited, echoing stderr live while also
+/// collecting it. `Err` means the process could not be run or waited on;
+/// otherwise returns its exit status and everything it wrote to stderr.
+pub(crate) fn run_streaming(mut cmd: Command, name: &str) -> Result<(ExitStatus, String), String> {
+    let mut child = cmd
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to run {name}: {e}"))?;
+
+    let stderr_reader = BufReader::new(child.stderr.take().expect("stderr is piped"));
+    let stderr_thread = std::thread::spawn(move || {
+        let mut collected = String::new();
+        for line in stderr_reader.lines().map_while(Result::ok) {
+            eprintln!("{line}");
+            collected.push_str(&line);
+            collected.push('\n');
+        }
+        collected
+    });
+
+    let status = child.wait().map_err(|e| format!("failed to wait for {name}: {e}"))?;
+    Ok((status, stderr_thread.join().unwrap_or_default()))
+}
+
 pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
     if url.starts_with("b2:") {
         Ok(Box::new(B2Backend::from_url(url)?))
@@ -58,18 +85,12 @@ pub fn from_url(url: &str) -> Result<Box<dyn RemoteBackend>, String> {
     }
 }
 
+/// Like [`from_url`], but also applies the per-remote settings (rustfs `mc` tuning).
 pub fn from_remote(remote: &crate::backup_config::backup::Remote) -> Result<Box<dyn RemoteBackend>, String> {
-    let url = &remote.url;
-    if url.starts_with("b2:") {
-        Ok(Box::new(B2Backend::from_url(url)?))
-    } else if url.starts_with("s3:") {
-        Ok(Box::new(S3Backend::from_url(url)?))
-    } else if url.starts_with("rustfs:") {
+    if remote.url.starts_with("rustfs:") {
         Ok(Box::new(RustfsBackend::from_remote(remote)?))
     } else {
-        Err(format!(
-            "unsupported remote URL '{url}'. supported prefixes: b2:, s3:, rustfs:"
-        ))
+        from_url(&remote.url)
     }
 }
 
