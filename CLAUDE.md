@@ -77,7 +77,7 @@ tasks {
 
 **TUI (`vivo manage`):** Four panes, Tab to cycle: Tasks → Fields → Remotes → Calls → Tasks.
 - `src/tui/app.rs` — `App` state: `tasks`, `default_task`, selection indices per pane, `focused_pane`
-- `src/tui/ui.rs` — ratatui rendering; Tasks list (default marked `*`), Fields (6 fixed rows), Remotes (content-sized), Calls (content-sized)
+- `src/tui/ui.rs` — ratatui rendering; Tasks list (default marked `*`), Fields (6 fixed rows), Remotes (content-sized), Calls (content-sized). All colors are the style constants at the top (`MUTED`, `FAINT`, `ACCENT`, `BORDER_IDLE`, `SELECTED`, `SELECTED_IDLE`): don't use `Color::DarkGray` for text (nearly invisible on several dark themes), and give unfocused panes a visible selection via `selection(focused)`
 - `src/tui/events.rs` — key dispatch; `run_prompt()` suspends/resumes TUI around inquire prompts
 - `src/tui/credentials.rs` — credential profile picker/creator used by remote add/edit
 - `src/config_editor.rs` — pure KDL mutation functions (add/remove/edit task, remote, call; set default task); all return `Result<String, String>`
