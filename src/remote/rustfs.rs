@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-use super::RemoteBackend;
+use super::objects::S3Store;
+use super::{recovery_sibling, ObjectStore, RemoteBackend, AWS_CREDENTIALS};
 
 pub struct RustfsBackend {
     pub(crate) endpoint: String,
@@ -11,6 +12,7 @@ pub struct RustfsBackend {
     pub(crate) mc_limit_upload: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(super) enum SyncTool {
     Mc,
     Aws,
@@ -158,7 +160,7 @@ impl RustfsBackend {
     /// Builds the `MC_HOST_vivo-sync` environment for mc — credentials are
     /// percent-encoded to avoid argv exposure and to handle special chars in
     /// base64-like secret keys.
-    fn mc_env(&self, env: &HashMap<String, String>) -> HashMap<String, String> {
+    pub(super) fn mc_env(&self, env: &HashMap<String, String>) -> HashMap<String, String> {
         let key = env.get("AWS_ACCESS_KEY_ID").map(String::as_str).unwrap_or("");
         let secret = env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str).unwrap_or("");
 
@@ -170,7 +172,7 @@ impl RustfsBackend {
         mc_env
     }
 
-    fn rclone_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+    pub(super) fn rclone_env(env: &HashMap<String, String>) -> HashMap<String, String> {
         let mut rclone_env = HashMap::new();
         rclone_env.insert(
             "RCLONE_S3_ACCESS_KEY_ID".to_string(),
@@ -305,6 +307,18 @@ impl RustfsBackend {
         Ok(RustfsBackend { endpoint, bucket, subpath, mc_max_workers: None, mc_limit_upload: None })
     }
 
+    /// A backend for `bucket` on `endpoint`, for callers that only need its
+    /// credentials/environment helpers.
+    pub(super) fn for_endpoint(endpoint: &str, bucket: &str) -> Self {
+        RustfsBackend {
+            endpoint: endpoint.to_string(),
+            bucket: bucket.to_string(),
+            subpath: String::new(),
+            mc_max_workers: None,
+            mc_limit_upload: None,
+        }
+    }
+
     pub fn from_remote(remote: &crate::backup_config::backup::Remote) -> Result<Self, String> {
         let mut backend = Self::from_url(&remote.url)?;
         backend.mc_max_workers = remote.mc_max_workers;
@@ -320,6 +334,29 @@ impl RemoteBackend for RustfsBackend {
 
     fn check_installed(&self) -> Result<(), String> {
         detect_tool().map(|_| ())
+    }
+
+    fn restic_url(&self) -> String {
+        match self.subpath.as_str() {
+            "" => format!("s3:{}/{}", self.endpoint, self.bucket),
+            sub => format!("s3:{}/{}/{sub}", self.endpoint, self.bucket),
+        }
+    }
+
+    fn credential_vars(&self) -> [(&'static str, &'static str); 2] {
+        AWS_CREDENTIALS
+    }
+
+    /// `bucket/sub` keeps it in `sub.vivo-recovery/`. A repository at the
+    /// bucket root can't have a sibling (the mirror deletes anything extra in
+    /// the bucket), so that gets a separate `bucket-vivo-recovery` bucket.
+    fn recovery_store(&self) -> Result<Box<dyn ObjectStore>, String> {
+        let sub = self.subpath.trim_matches('/');
+        Ok(Box::new(if sub.is_empty() {
+            S3Store::new(&self.endpoint, &format!("{}-vivo-recovery", self.bucket), "", true)
+        } else {
+            S3Store::new(&self.endpoint, &self.bucket, &recovery_sibling(sub), false)
+        }))
     }
 
     fn sync(
@@ -353,6 +390,20 @@ impl RemoteBackend for RustfsBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_copy_gets_its_own_bucket_at_the_root_and_a_sibling_prefix_otherwise() {
+        let store = |url| RustfsBackend::from_url(url).unwrap().recovery_store().unwrap().describe();
+        assert_eq!(store("rustfs:https://h/filecabinet"), "s3://filecabinet-vivo-recovery/ (https://h)");
+        assert_eq!(store("rustfs:https://h/bkt/sub/dir"), "s3://bkt/sub/dir.vivo-recovery (https://h)");
+    }
+
+    #[test]
+    fn restic_url_is_the_s3_form() {
+        let url = |u| RustfsBackend::from_url(u).unwrap().restic_url();
+        assert_eq!(url("rustfs:http://nas:9000/backup"), "s3:http://nas:9000/backup");
+        assert_eq!(url("rustfs:https://h/bkt/sub"), "s3:https://h/bkt/sub");
+    }
+
     use super::*;
 
     #[test]

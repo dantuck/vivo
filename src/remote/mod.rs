@@ -1,19 +1,49 @@
 mod b2;
+mod objects;
 mod rustfs;
 mod s3;
 
 pub use b2::B2Backend;
 pub use rustfs::RustfsBackend;
 pub use s3::S3Backend;
+pub use objects::ObjectStore;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
+/// Credential variables of S3-compatible stores, with the prompt for each.
+pub(crate) const AWS_CREDENTIALS: [(&str, &str); 2] =
+    [("AWS_ACCESS_KEY_ID", "Access key ID"), ("AWS_SECRET_ACCESS_KEY", "Secret access key")];
+
+/// Suffix of the folder (or bucket) next to a repository that holds its recovery copy.
+const RECOVERY_SUFFIX: &str = ".vivo-recovery";
+
+pub(crate) fn recovery_sibling(path: &str) -> String {
+    format!("{path}{RECOVERY_SUFFIX}")
+}
+
 pub trait RemoteBackend {
     fn name(&self) -> &str;
     fn check_installed(&self) -> Result<(), String>;
+
+    /// The URL restic uses to open this remote's repository.
+    fn restic_url(&self) -> String;
+
+    /// The environment restic needs, given a credentials profile.
+    fn restic_env(&self, credentials: &HashMap<String, String>) -> HashMap<String, String> {
+        credentials.clone()
+    }
+
+    /// The two credential variables a profile for this remote holds, each
+    /// with the prompt used to ask for it.
+    fn credential_vars(&self) -> [(&'static str, &'static str); 2];
+
+    /// Where this remote keeps its recovery copy (a sibling of the
+    /// repository: sync deletes anything extra inside it), or why it can't.
+    fn recovery_store(&self) -> Result<Box<dyn ObjectStore>, String>;
+
     fn sync(
         &self,
         local_repo: &str,

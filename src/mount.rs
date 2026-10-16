@@ -5,48 +5,7 @@ use std::process::Command;
 
 use inquire::Select;
 
-use crate::backup_config::task::Task;
-use crate::backup_config::BackupConfig;
-use crate::config::Secrets;
 use crate::doctor;
-
-pub struct MountEntry {
-    pub label: String,
-    pub task_name: String,
-    pub repo_url: String,
-    pub credentials_profile: Option<String>,
-}
-
-pub fn normalize_repo_url(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix("rustfs:") {
-        format!("s3:{rest}")
-    } else {
-        url.to_string()
-    }
-}
-
-pub fn build_entries(tasks: &[Task]) -> Vec<MountEntry> {
-    let mut entries = Vec::new();
-    for task in tasks {
-        if let Some(repo) = task.backup().map(|b| b.repo()) {
-            entries.push(MountEntry {
-                label: format!("{} (local)", task.name),
-                task_name: task.name.clone(),
-                repo_url: repo.to_string(),
-                credentials_profile: None,
-            });
-        }
-        for (url, creds) in task.backup_remotes() {
-            entries.push(MountEntry {
-                label: format!("{} \u{2192} {}", task.name, url),
-                task_name: task.name.clone(),
-                repo_url: url.to_string(),
-                credentials_profile: Some(creds.to_string()),
-            });
-        }
-    }
-    entries
-}
 
 pub fn mount_point_path(mount_path: Option<&str>, task_name: &str) -> Result<(PathBuf, bool), String> {
     match mount_path {
@@ -160,39 +119,29 @@ pub fn run_preflight(
 }
 
 pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> Result<(), String> {
-    let config = BackupConfig::from_file(config_path)?;
+    let (config, secrets) = crate::repos::load(config_path, secrets_path)?;
 
-    let secrets_yaml = crate::backup_config::decrypt_sops_file(secrets_path)
-        .map_err(|e| format!("could not decrypt secrets: {e}"))?;
-    let secrets: Secrets = crate::backup_config::parse_secrets(&secrets_yaml)
-        .map_err(|e| format!("could not parse secrets: {e}"))?;
-
-    let entries = build_entries(&config.tasks);
-    if entries.is_empty() {
+    let mut targets = Vec::new();
+    for task in crate::repos::backup_tasks(&config, None)? {
+        targets.extend(crate::repos::targets_for(task, &secrets));
+    }
+    if targets.is_empty() {
         return Err("No backup tasks configured. Run `vivo task add` first.".to_string());
     }
 
-    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-    let selected_label = Select::new("Select repository to mount:", labels)
-        .prompt()
+    let labels: Vec<String> = targets.iter().map(|t| t.label()).collect();
+    let selected = Select::new("Select repository to mount:", labels)
+        .raw_prompt()
         .map_err(|_| "cancelled".to_string())?;
-    let entry = entries
-        .iter()
-        .find(|e| e.label == selected_label)
-        .ok_or("selection not found")?;
+    let target = &targets[selected.index];
 
-    let creds: HashMap<String, String> = match &entry.credentials_profile {
-        Some(profile) => secrets.credentials.get(profile).cloned().unwrap_or_default(),
-        None => HashMap::new(),
-    };
-
-    let restic_url = normalize_repo_url(&crate::expand_env_vars(&entry.repo_url));
+    let restic_url = &target.restic_url;
     let check_path = mount_path.map(Path::new);
-    if !run_preflight(&restic_url, &creds, &secrets.restic_password, check_path) {
+    if !run_preflight(restic_url, &target.env, &secrets.restic_password, check_path) {
         return Err("pre-flight checks failed — fix the issues above and try again".to_string());
     }
 
-    let (mount_point, owned) = mount_point_path(mount_path, &entry.task_name)?;
+    let (mount_point, owned) = mount_point_path(mount_path, &target.task)?;
     let mount_point_str = mount_point.to_string_lossy().to_string();
 
     println!("Mounting {restic_url} at {mount_point_str}");
@@ -210,9 +159,8 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     ctrlc::set_handler(|| {}).map_err(|e| format!("could not set Ctrl+C handler: {e}"))?;
 
     let mut child = Command::new("restic")
-        .args(["mount", "--repo", &restic_url, &mount_point_str])
-        .envs(&creds)
-        .env("RESTIC_PASSWORD", &secrets.restic_password)
+        .args(["mount", "--repo", restic_url, &mount_point_str])
+        .envs(&target.env)
         .spawn()
         .map_err(|e| format!("could not start restic: {e}"))?;
 
@@ -255,106 +203,6 @@ fn lazy_unmount(_mount_point: &str) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_task_kdl(name: &str, repo: &str, remotes: &[(&str, &str)]) -> String {
-        let remote_lines: String = remotes
-            .iter()
-            .map(|(url, creds)| {
-                format!(
-                    "        remote \"{url}\" {{\n            credentials \"{creds}\"\n        }}"
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            r#"default-task "{name}"
-tasks {{
-    task "{name}" {{
-        backup {{
-            repo "{repo}"
-            directory "/tmp"
-{remote_lines}
-        }}
-    }}
-}}"#
-        )
-    }
-
-    fn parse_tasks(kdl: &str) -> Vec<crate::backup_config::task::Task> {
-        let config: crate::BackupConfig = crate::BackupConfig::parse("<test>", kdl).unwrap();
-        config.tasks
-    }
-
-    #[test]
-    fn build_entries_local_only() {
-        let kdl = make_task_kdl("backup", "/tmp/repo", &[]);
-        let tasks = parse_tasks(&kdl);
-        let entries = build_entries(&tasks);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].label, "backup (local)");
-        assert_eq!(entries[0].repo_url, "/tmp/repo");
-        assert!(entries[0].credentials_profile.is_none());
-    }
-
-    #[test]
-    fn build_entries_with_remotes() {
-        let kdl = make_task_kdl(
-            "backup",
-            "/tmp/repo",
-            &[("s3:https://s3.example.com/bucket", "aws")],
-        );
-        let tasks = parse_tasks(&kdl);
-        let entries = build_entries(&tasks);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].label, "backup (local)");
-        assert_eq!(entries[1].label, "backup \u{2192} s3:https://s3.example.com/bucket");
-        assert_eq!(entries[1].credentials_profile.as_deref(), Some("aws"));
-    }
-
-    #[test]
-    fn build_entries_skips_tasks_without_backup() {
-        let kdl = r#"default-task "cmd"
-tasks {
-    task "cmd" {
-        command "echo hi"
-    }
-}"#;
-        let tasks = parse_tasks(kdl);
-        let entries = build_entries(&tasks);
-        assert_eq!(entries.len(), 0);
-    }
-
-    #[test]
-    fn normalize_repo_url_translates_rustfs() {
-        assert_eq!(
-            normalize_repo_url("rustfs:http://nas:9000/backup"),
-            "s3:http://nas:9000/backup"
-        );
-    }
-
-    #[test]
-    fn normalize_repo_url_passes_through_s3() {
-        assert_eq!(
-            normalize_repo_url("s3:https://s3.amazonaws.com/bucket"),
-            "s3:https://s3.amazonaws.com/bucket"
-        );
-    }
-
-    #[test]
-    fn normalize_repo_url_passes_through_b2() {
-        assert_eq!(
-            normalize_repo_url("b2:my-bucket:restic/main"),
-            "b2:my-bucket:restic/main"
-        );
-    }
-
-    #[test]
-    fn normalize_repo_url_passes_through_local() {
-        assert_eq!(
-            normalize_repo_url("/home/user/.local/share/restic/main"),
-            "/home/user/.local/share/restic/main"
-        );
-    }
 
     #[test]
     fn mount_point_path_explicit_creates_dir() {
@@ -415,22 +263,5 @@ tasks {
         let ok = run_preflight("/tmp/norepo", &HashMap::new(), "pw", None);
         std::env::set_var("PATH", &original);
         assert!(!ok, "preflight should fail when restic is not on PATH");
-    }
-
-    #[test]
-    fn build_entries_expands_env_vars_in_local_repo() {
-        // Verify that $HOME-style repo paths in configs will be expanded before use.
-        // run() calls expand_env_vars on entry.repo_url; this test confirms the raw
-        // value comes through build_entries so expand_env_vars is what matters.
-        let kdl = make_task_kdl("backup", "$HOME/.local/share/restic/main", &[]);
-        let tasks = parse_tasks(&kdl);
-        let entries = build_entries(&tasks);
-        assert_eq!(entries.len(), 1);
-        // Raw URL stored as-is — expansion happens in run() before preflight/mount
-        assert_eq!(entries[0].repo_url, "$HOME/.local/share/restic/main");
-        // But after expand_env_vars it resolves to a real path
-        let expanded = crate::expand_env_vars(&entries[0].repo_url);
-        assert!(!expanded.contains('$'), "expanded path should not contain $ — got: {expanded}");
-        assert!(expanded.contains('/'), "expanded path should be absolute");
     }
 }

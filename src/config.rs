@@ -101,6 +101,92 @@ pub fn build_cli() -> Command {
                         .help("Auto-install missing tools"),
                 ),
         )
+        .subcommand(
+            Command::new("schedule")
+                .about("Run backups automatically every day (launchd, systemd or cron)")
+                .subcommand(
+                    Command::new("add")
+                        .about("Install the daily schedule (replaces an existing one)")
+                        .arg(Arg::new("at").long("at").value_name("HH:MM").help("Time of day, 24-hour (default: 02:00)"))
+                        .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Task to run (default: the config's default task)"))
+                        .arg(
+                            Arg::new("print")
+                                .long("print")
+                                .action(ArgAction::SetTrue)
+                                .help("Show what would be installed without installing it"),
+                        ),
+                )
+                .subcommand(Command::new("remove").about("Remove the schedule"))
+                .subcommand(Command::new("status").about("Show whether a schedule is installed")),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Show when each task last backed up and synced, and flag problems")
+                .arg(
+                    Arg::new("max-age")
+                        .long("max-age")
+                        .value_name("HOURS")
+                        .value_parser(value_parser!(u32))
+                        .default_value("48")
+                        .help("Warn when the newest snapshot or sync is older than this"),
+                ),
+        )
+        .subcommand(
+            Command::new("recover")
+                .about("Rebuild config and secrets on a new machine from a remote's recovery copy")
+                .arg(Arg::new("from").long("from").value_name("URL").help("Remote URL from your old config"))
+                .arg(Arg::new("key-id").long("key-id").value_name("ID").help("Access key ID for that remote"))
+                .arg(Arg::new("key").long("key").value_name("KEY").help("Secret access key for that remote"))
+                .arg(
+                    Arg::new("force")
+                        .long("force")
+                        .action(ArgAction::SetTrue)
+                        .help("Replace an existing config/secrets file"),
+                ),
+        )
+        .subcommand(
+            Command::new("snapshots")
+                .about("List the snapshots in a task's backup repository")
+                .arg(Arg::new("task").value_name("TASK").help("Task to list (default: all)"))
+                .arg(
+                    Arg::new("remote")
+                        .long("remote")
+                        .action(ArgAction::SetTrue)
+                        .help("List the off-site copies instead of the local repository"),
+                ),
+        )
+        .subcommand(
+            Command::new("restore")
+                .about("Restore files from a backup (guided on a terminal)")
+                .arg(Arg::new("task").value_name("TASK").help("Task to restore"))
+                .arg(
+                    Arg::new("snapshot")
+                        .long("snapshot")
+                        .short('s')
+                        .value_name("ID")
+                        .help("Snapshot ID to restore (default: latest)"),
+                )
+                .arg(
+                    Arg::new("from")
+                        .long("from")
+                        .value_name("local|URL")
+                        .help("Where to read from: 'local' or a remote URL (default: local, else the first remote)"),
+                )
+                .arg(
+                    Arg::new("target")
+                        .long("target")
+                        .value_name("DIR")
+                        .help("Directory to restore into (default: ~/vivo-restore/<task>)"),
+                )
+                .arg(
+                    Arg::new("path")
+                        .long("path")
+                        .short('p')
+                        .value_name("PATH")
+                        .action(ArgAction::Append)
+                        .help("Only restore this path inside the snapshot (repeatable)"),
+                ),
+        )
         .subcommand(Command::new("update").about("Update vivo to the latest release"))
         .subcommand(Command::new("manage").about("Open the interactive config manager (TUI)"))
         .subcommand(
@@ -193,6 +279,16 @@ pub fn xdg_config_home() -> PathBuf {
         .unwrap_or_else(|_| {
             PathBuf::from(env::var("HOME").expect("HOME environment variable must be set"))
                 .join(".config")
+        })
+}
+
+/// `$XDG_STATE_HOME`, else `~/.local/state`.
+pub fn xdg_state_home() -> PathBuf {
+    env::var("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env::var("HOME").expect("HOME environment variable must be set"))
+                .join(".local/state")
         })
 }
 

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use super::RemoteBackend;
+use super::objects::B2Store;
+use super::{recovery_sibling, ObjectStore, RemoteBackend};
 
 fn is_auth_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
@@ -54,6 +55,47 @@ impl B2Backend {
 impl RemoteBackend for B2Backend {
     fn name(&self) -> &str {
         "b2"
+    }
+
+    fn restic_url(&self) -> String {
+        if self.path.is_empty() {
+            format!("b2:{}", self.bucket)
+        } else {
+            format!("b2:{}:{}", self.bucket, self.path)
+        }
+    }
+
+    /// restic reads `B2_ACCOUNT_ID`/`B2_ACCOUNT_KEY`, but `b2 account authorize`
+    /// (and so vivo's secrets) calls them `B2_APPLICATION_KEY_ID`/`..._KEY`.
+    fn restic_env(&self, credentials: &HashMap<String, String>) -> HashMap<String, String> {
+        let mut env = credentials.clone();
+        for (from, to) in [("B2_APPLICATION_KEY_ID", "B2_ACCOUNT_ID"), ("B2_APPLICATION_KEY", "B2_ACCOUNT_KEY")] {
+            if let (Some(v), false) = (credentials.get(from), env.contains_key(to)) {
+                env.insert(to.to_string(), v.clone());
+            }
+        }
+        env
+    }
+
+    fn credential_vars(&self) -> [(&'static str, &'static str); 2] {
+        [
+            ("B2_APPLICATION_KEY_ID", "Backblaze application key ID"),
+            ("B2_APPLICATION_KEY", "Backblaze application key"),
+        ]
+    }
+
+    /// `bucket:folder` keeps it in `folder.vivo-recovery/`. A repository at the
+    /// bucket root has no safe sibling (`b2 sync --delete` would wipe anything
+    /// placed inside it), so that is reported rather than guessed at.
+    fn recovery_store(&self) -> Result<Box<dyn ObjectStore>, String> {
+        let path = self.path.trim_matches('/');
+        if path.is_empty() {
+            return Err(format!(
+                "b2:{} is at the bucket root, so a recovery copy has nowhere safe to go — use a folder, e.g. b2:{}:backups, or set `recovery false`",
+                self.bucket, self.bucket
+            ));
+        }
+        Ok(Box::new(B2Store { bucket: self.bucket.clone(), prefix: recovery_sibling(path) }))
     }
 
     fn check_installed(&self) -> Result<(), String> {
@@ -113,6 +155,28 @@ mod tests {
         let b = B2Backend::from_url("b2:my-bucket").unwrap();
         assert_eq!(b.bucket, "my-bucket");
         assert_eq!(b.path, "");
+    }
+
+    #[test]
+    fn recovery_copy_is_a_sibling_folder_and_never_the_bucket_root() {
+        let store = |url| B2Backend::from_url(url).unwrap().recovery_store();
+        assert_eq!(store("b2:bkt:filecabinet").unwrap().describe(), "b2://bkt/filecabinet.vivo-recovery");
+        assert_eq!(store("b2:bkt:a/b/").unwrap().describe(), "b2://bkt/a/b.vivo-recovery");
+        assert!(store("b2:bkt").err().unwrap().contains("bucket root"));
+        assert!(store("b2:bkt:").is_err());
+    }
+
+    #[test]
+    fn restic_url_and_env() {
+        let b = B2Backend::from_url("b2:bkt:p/q").unwrap();
+        assert_eq!(b.restic_url(), "b2:bkt:p/q");
+        let creds = HashMap::from([
+            ("B2_APPLICATION_KEY_ID".to_string(), "id".to_string()),
+            ("B2_APPLICATION_KEY".to_string(), "key".to_string()),
+        ]);
+        let env = b.restic_env(&creds);
+        assert_eq!(env["B2_ACCOUNT_ID"], "id");
+        assert_eq!(env["B2_ACCOUNT_KEY"], "key");
     }
 
     #[test]

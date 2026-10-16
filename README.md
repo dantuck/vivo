@@ -42,7 +42,7 @@ cargo install vivo
 ### Build from Source
 
 ```sh
-git clone https://codeberg.org/tuck/vivo
+git clone https://github.com/dantuck/vivo
 cd vivo
 cargo build --release
 cp target/release/vivo /usr/local/bin/
@@ -70,68 +70,85 @@ vivo remote test    # re-test every configured remote (or --task NAME)
 vivo doctor         # check tools, config, secrets, and remote connectivity
 vivo --dry-run      # preview the backup without changing anything
 vivo                # run the backup
+vivo schedule add   # run it every day
+vivo status         # is it working?
+vivo restore        # get files back
 ```
 
 vivo exits non-zero if the backup fails or any remote fails to sync, so schedulers can alert on it.
 
 ## Scheduling
 
-vivo runs once and exits; schedule it to back up automatically. Use the full path to `vivo` (`which vivo`) and `vivo --dry-run` first to confirm it works non-interactively. Scheduled jobs don't get your shell's `PATH`, so make sure `restic`, `sops`, and any sync tool (`mc`, `b2`) are findable — the examples below set it.
-
-### macOS (launchd)
-
-Save as `~/Library/LaunchAgents/dev.vivo.backup.plist` (change the path, and add `/opt/homebrew/bin` if you installed tools with Homebrew), then run `launchctl load ~/Library/LaunchAgents/dev.vivo.backup.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>dev.vivo.backup</string>
-  <key>ProgramArguments</key><array><string>/usr/local/bin/vivo</string></array>
-  <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardOutPath</key><string>/tmp/vivo.log</string>
-  <key>StandardErrorPath</key><string>/tmp/vivo.log</string>
-</dict>
-</plist>
+```sh
+vivo schedule add              # daily at 02:00 (asks on a terminal; or --at 03:30)
+vivo schedule add --task docs  # schedule one task instead of the default
+vivo schedule status           # is it installed, and when does it run?
+vivo schedule remove
 ```
 
-### Linux (systemd user timer)
+`vivo schedule` sets up a launchd agent on macOS, a systemd user timer on Linux, or a crontab entry where systemd isn't running. It handles the details that make hand-written jobs fail: the full path to `vivo`, a `PATH` that includes `restic`, `sops` and your sync tool, your custom config/key locations, and a log file (`~/.local/state/vivo/vivo.log`). `vivo init` offers it as its last step. Use `vivo schedule add --print` to see exactly what would be installed.
 
-`~/.config/systemd/user/vivo.service`:
+On macOS, grant the `vivo` binary Full Disk Access (System Settings → Privacy & Security) if you back up Documents, Desktop or other protected folders; anything vivo can't read is skipped with a warning and the rest of the backup still completes. A Mac that is asleep at the scheduled time runs the backup when it wakes.
 
-```ini
-[Unit]
-Description=vivo backup
+## Is it working? — `vivo status`
 
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/vivo
+```sh
+vivo status                # latest snapshot, last sync per remote, schedule
+vivo status --max-age 24   # flag anything older than 24 hours (default 48)
 ```
 
-`~/.config/systemd/user/vivo.timer`:
+`status` reads the newest snapshot from each local repository and the result of the last sync to each remote, and exits non-zero when something is stale, failed, or has never run, so you can also call it from a monitor.
 
-```ini
-[Unit]
-Description=Daily vivo backup
+To be told when a scheduled run fails, add hooks to a task. They run with `VIVO_TASK`, `VIVO_STATUS` (`success`/`failure`) and `VIVO_ERROR` set, and are skipped on dry runs:
 
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=timers.target
+```kdl
+task "backup" {
+    calls "docs"
+    on-failure "osascript -e 'display notification \"Backup failed: $VIVO_ERROR\" with title \"vivo\"'"
+    on-success "curl -fsS https://hc-ping.com/your-uuid"
+}
 ```
 
-Enable with `systemctl --user enable --now vivo.timer`. A failed run shows in `systemctl --user status vivo.service`.
+## Restoring
 
-### cron
-
-```cron
-0 2 * * * PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin /usr/local/bin/vivo >> $HOME/vivo.log 2>&1
+```sh
+vivo snapshots [TASK]            # list what's in the local repository (--remote for off-site copies)
+vivo restore                     # guided: pick a task, snapshot and destination
+vivo restore docs --path /Users/me/Documents/taxes   # just part of a backup
+vivo restore docs --snapshot 1a2b3c4d --target ~/old # a specific snapshot, somewhere specific
+vivo restore docs --from rustfs:https://host/bucket  # straight from an off-site copy
 ```
+
+Restores go to `~/vivo-restore/<task>` unless you choose otherwise, never over your live files, and keep each file's original folder structure beneath that directory. If the local repository is gone (a lost or new machine), `restore` reads from your off-site remote automatically.
+
+### Restoring on a new machine
+
+Every time vivo syncs to a remote it also keeps a small **recovery copy** next to the repository: your `secrets.yaml` (already encrypted by sops/age) and your `backup.kdl` (encrypted with your age key). It is only re-uploaded when one of them changes. To rebuild a lost machine you need just two things kept somewhere else — your **age key** and **access to the remote** (you can issue a new access key from the provider's console):
+
+1. Install vivo, `restic`, `sops` and `age`.
+2. Put your age key back at `~/.config/sops/age/keys.txt`.
+3. `vivo recover --from <remote URL>` — asks for the remote's access key, downloads and decrypts the recovery copy, and writes `~/.config/vivo/backup.kdl` and `secrets.yaml` (the restic password and every credentials profile come back with them).
+4. `vivo restore` — with no local repository yet, it reads from the off-site copy.
+
+Where the recovery copy lives (a sibling of the repository, because vivo's sync tools delete anything extra inside it):
+
+| Remote | Recovery copy |
+|---|---|
+| `b2:bucket:folder` | `folder.vivo-recovery/` in the same bucket (a repo at the bucket root has no safe place; vivo says so) |
+| `rustfs:https://host/bucket/sub` | `sub.vivo-recovery/` in the same bucket |
+| `rustfs:https://host/bucket` | a separate `bucket-vivo-recovery` bucket (created for you) |
+| `s3:https://host/bucket[/path]` | `path.vivo-recovery/` (or `vivo-recovery/` at the bucket root) |
+
+A failed or impossible recovery upload only warns — it never fails the backup — and `vivo status` shows it until fixed. To opt a remote out (for example a shared bucket):
+
+```kdl
+remote "s3:https://s3.amazonaws.com/shared" {
+    credentials "aws"
+    recovery false
+}
+```
+
+Keep your age key and restic password in a password manager or somewhere else off this computer: they are the two things vivo cannot recover for you.
 
 ## Usage
 
@@ -139,9 +156,20 @@ Enable with `systemctl --user enable --now vivo.timer`. A failed run shows in `s
 Usage: vivo [OPTIONS] [task_name] [COMMAND]
 
 Commands:
-  init     Set up vivo for first use
-  config   Manage backup configuration
-  secrets  Manage encrypted secrets
+  init       Set up vivo for first use
+  status     Show when each task last backed up and synced, and flag problems
+  schedule   Run backups automatically every day
+  snapshots  List the snapshots in a task's backup repository
+  restore    Restore files from a backup
+  recover    Rebuild config and secrets on a new machine from a remote
+  config     Manage backup configuration
+  secrets    Manage encrypted secrets
+  task       Manage backup tasks
+  remote     Manage backup remotes
+  doctor     Check system health
+  mount      Mount a backup repository as a FUSE filesystem
+  manage     Open the interactive config manager (TUI)
+  update     Update vivo to the latest release
 
 Arguments:
   [task_name]  Optional task name to run (default: value of default-task in config)
@@ -266,6 +294,8 @@ tasks {
 |---|---|
 | `command "..."` | Shell command to run after backup (via `sh -c`) |
 | `calls "name"` | Run another named task; circular references are detected and skipped |
+| `on-success "..."` | Shell command run when the task finishes without errors (skipped on dry runs) |
+| `on-failure "..."` | Shell command run when the task or one of its remotes fails (skipped on dry runs) |
 
 ## Secrets
 

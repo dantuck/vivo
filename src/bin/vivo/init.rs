@@ -154,7 +154,7 @@ pub fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
         return false;
     }
 
-    let (mut password_set, mut remote_added, mut backed_up) = (false, false, false);
+    let (mut password_set, mut remote_added, mut backed_up, mut scheduled) = (false, false, false, false);
     if interactive {
         println!();
         password_set = setup_restic_password(secrets_path);
@@ -162,6 +162,7 @@ pub fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
         if password_set {
             remote_added = offer_first_remote(config_path, secrets_path);
             backed_up = offer_first_backup(config_path, secrets_path);
+            scheduled = crate::schedule::offer_schedule(config_path);
         }
     }
 
@@ -177,8 +178,11 @@ pub fn cmd_init(config_path: &str, secrets_path: &str) -> bool {
     if !backed_up {
         steps.push("Run your first backup:      vivo  (preview first with: vivo --dry-run)");
     }
-    steps.push("Run it on a schedule:       see \"Scheduling\" in the README (launchd, cron, systemd)");
-    steps.push("Check everything:           vivo doctor");
+    if !scheduled {
+        steps.push("Run it every day:           vivo schedule add");
+    }
+    steps.push("See if it's working:         vivo status   (and `vivo doctor` for the setup itself)");
+    steps.push("Get files back:              vivo restore");
     for (i, step) in steps.iter().enumerate() {
         println!("  {}. {step}", i + 1);
     }
