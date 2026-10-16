@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/dantuck/vivo/compare/v0.16.2...v0.17.0) (2026-10-16)
+
+
+### Features
+
+* add schedule, status, snapshots, restore and recover commands ([3e7d74b](https://github.com/dantuck/vivo/commit/3e7d74b2088c50b948d65fd60c7c4fcb7088933b))
+
 ## [0.16.2](https://github.com/dantuck/vivo/compare/v0.16.1...v0.16.2) (2026-10-16)
 
 
