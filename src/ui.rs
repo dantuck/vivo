@@ -1,5 +1,4 @@
-use colored::*;
-use term_size;
+use colored::Colorize;
 
 pub fn print_banner() {
     #[rustfmt::skip]
@@ -62,9 +61,8 @@ pub fn section_header(message: &str) {
     let prefix_dashes = "----";
     let max_line_length = 70;
 
-    let term_width = term_size::dimensions()
-        .map(|(w, _)| w)
-        .unwrap_or(max_line_length);
+    let term_width = crossterm::terminal::size()
+        .map_or(max_line_length, |(w, _)| usize::from(w));
     let line_length = term_width.min(max_line_length);
 
     let message_len = message.len();
