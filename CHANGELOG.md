@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/dantuck/vivo/compare/v0.16.1...v0.16.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **tui:** keep text and selection readable on dark themes ([516b83d](https://github.com/dantuck/vivo/commit/516b83d8d504d03a9eeb820553eddefff8869d6b))
+
 ## [0.16.1](https://github.com/dantuck/vivo/compare/v0.16.0...v0.16.1) (2026-10-16)
 
 
