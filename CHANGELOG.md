@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/dantuck/vivo/compare/v0.15.1...v0.16.0) (2026-10-16)
+
+
+### Features
+
+* **setup:** guide first-run setup through remotes, credentials and a first backup ([dbe4701](https://github.com/dantuck/vivo/commit/dbe47014b12fa5305ff3d60b46b966c3c47ccba8))
+
+
+### Bug Fixes
+
+* **build:** replace unmaintained knuffel with the kdl crate ([42b802f](https://github.com/dantuck/vivo/commit/42b802f9b70d5f622f227a9df2afe9a1e3c35a7b))
+
 ## [0.15.1](https://github.com/dantuck/vivo/compare/v0.15.0...v0.15.1) (2026-09-06)
 
 
