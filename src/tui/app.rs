@@ -10,6 +10,18 @@ pub enum Pane {
     Calls,
 }
 
+impl Pane {
+    /// The pane Tab moves to: Tasks → Fields → Remotes → Calls → Tasks.
+    pub fn next(self) -> Pane {
+        match self {
+            Pane::Tasks => Pane::Fields,
+            Pane::Fields => Pane::Remotes,
+            Pane::Remotes => Pane::Calls,
+            Pane::Calls => Pane::Tasks,
+        }
+    }
+}
+
 pub const FIELD_NAMES: &[&str] =
     &["Name", "Description", "Repo", "Directory", "Exclude file", "Files from"];
 
@@ -51,24 +63,27 @@ impl App {
         let tasks = config
             .tasks
             .iter()
-            .map(|t| TaskEntry {
-                name: t.name.clone(),
-                description: t.description().map(str::to_owned),
-                repo: t.backup_repo().map(str::to_owned),
-                directory: t.backup_directory().map(str::to_owned),
-                exclude_file: t.backup_exclude_file().map(str::to_owned),
-                files_from: t.backup_files_from().map(str::to_owned),
-                remotes: t
-                    .backup_remote_entries()
-                    .into_iter()
-                    .map(|r| RemoteEntry {
-                        url: r.url.clone(),
-                        credentials: r.credentials.clone(),
-                        mc_max_workers: r.mc_max_workers,
-                        mc_limit_upload: r.mc_limit_upload.clone(),
-                    })
-                    .collect(),
-                calls: t.call_names().into_iter().map(str::to_owned).collect(),
+            .map(|t| {
+                let backup = t.backup();
+                TaskEntry {
+                    name: t.name.clone(),
+                    description: t.description().map(str::to_owned),
+                    repo: backup.map(|b| b.repo().to_owned()),
+                    directory: backup.and_then(|b| b.directory()).map(str::to_owned),
+                    exclude_file: backup.and_then(|b| b.exclude_file()).map(str::to_owned),
+                    files_from: backup.and_then(|b| b.files_from()).map(str::to_owned),
+                    remotes: t
+                        .remotes()
+                        .iter()
+                        .map(|r| RemoteEntry {
+                            url: r.url.clone(),
+                            credentials: r.credentials.clone(),
+                            mc_max_workers: r.mc_max_workers,
+                            mc_limit_upload: r.mc_limit_upload.clone(),
+                        })
+                        .collect(),
+                    calls: t.call_names().to_vec(),
+                }
             })
             .collect();
 
@@ -116,31 +131,60 @@ impl App {
             .unwrap_or(&[])
     }
 
+    /// Moves the focused pane's selection by `delta`, staying within the list.
+    /// Changing task resets the selection in the task's own panes.
+    pub fn move_selection(&mut self, delta: isize) {
+        let pane = self.focused_pane;
+        let last = self.pane_len(pane).saturating_sub(1);
+        let selected = self.selection_mut(pane);
+        let moved = selected.saturating_add_signed(delta).min(last);
+        if moved == *selected {
+            return;
+        }
+        *selected = moved;
+        if pane == Pane::Tasks {
+            self.selected_remote = 0;
+            self.selected_field = 0;
+            self.selected_call = 0;
+        }
+    }
+
+    fn pane_len(&self, pane: Pane) -> usize {
+        match pane {
+            Pane::Tasks => self.tasks.len(),
+            Pane::Fields => FIELD_NAMES.len(),
+            Pane::Remotes => self.current_remotes().len(),
+            Pane::Calls => self.current_calls().len(),
+        }
+    }
+
+    fn selection_mut(&mut self, pane: Pane) -> &mut usize {
+        match pane {
+            Pane::Tasks => &mut self.selected_task,
+            Pane::Fields => &mut self.selected_field,
+            Pane::Remotes => &mut self.selected_remote,
+            Pane::Calls => &mut self.selected_call,
+        }
+    }
+
+    /// Re-reads the config file, keeping the focus, status and (clamped) selections.
     pub fn reload(&mut self) {
-        if let Ok(content) = std::fs::read_to_string(&self.config_path) {
-            if let Ok(config) =
-                BackupConfig::parse(&self.config_path, &content)
-            {
-                let prev_task = self.selected_task;
-                let prev_remote = self.selected_remote;
-                let prev_field = self.selected_field;
-                let prev_call = self.selected_call;
-                let prev_pane = self.focused_pane;
-                let prev_msg = self.status_message.take();
-                let prev_exp = self.status_expires_at;
-                let new = App::new(&config, self.config_path.clone());
-                *self = new;
-                self.selected_task =
-                    prev_task.min(self.tasks.len().saturating_sub(1));
-                self.selected_remote =
-                    prev_remote.min(self.current_remotes().len().saturating_sub(1));
-                self.selected_field = prev_field.min(FIELD_NAMES.len() - 1);
-                self.selected_call =
-                    prev_call.min(self.current_calls().len().saturating_sub(1));
-                self.focused_pane = prev_pane;
-                self.status_message = prev_msg;
-                self.status_expires_at = prev_exp;
-            }
+        let Ok(content) = std::fs::read_to_string(&self.config_path) else {
+            return;
+        };
+        let Ok(config) = BackupConfig::parse(&self.config_path, &content) else {
+            return;
+        };
+        let fresh = App::new(&config, self.config_path.clone());
+        self.tasks = fresh.tasks;
+        self.default_task = fresh.default_task;
+
+        // Clamp every selection, the task first: the others index into its lists.
+        self.selected_task = self.selected_task.min(self.pane_len(Pane::Tasks).saturating_sub(1));
+        for pane in [Pane::Remotes, Pane::Calls, Pane::Fields] {
+            let last = self.pane_len(pane).saturating_sub(1);
+            let selected = self.selection_mut(pane);
+            *selected = (*selected).min(last);
         }
     }
 }

@@ -28,7 +28,7 @@ pub fn normalize_repo_url(url: &str) -> String {
 pub fn build_entries(tasks: &[Task]) -> Vec<MountEntry> {
     let mut entries = Vec::new();
     for task in tasks {
-        if let Some(repo) = task.backup_repo() {
+        if let Some(repo) = task.backup().map(|b| b.repo()) {
             entries.push(MountEntry {
                 label: format!("{} (local)", task.name),
                 task_name: task.name.clone(),

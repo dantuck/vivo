@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command as SysCommand;
 use std::{env, fs};
 
-use colored::*;
+use colored::Colorize;
 
 use crate::backup_config::kdl_decode::Source;
 use crate::backup_config::task::Task;
@@ -496,9 +496,9 @@ tasks {
         .unwrap();
         let t = &cfg.tasks[0];
         assert_eq!(t.description(), Some("Docs"));
-        assert_eq!(t.backup_directory(), Some("/d"));
-        assert_eq!(t.backup_exclude_file(), Some("/x"));
-        assert_eq!(t.backup_files_from(), Some("/f"));
+        assert_eq!(t.backup().and_then(|b| b.directory()), Some("/d"));
+        assert_eq!(t.backup().and_then(|b| b.exclude_file()), Some("/x"));
+        assert_eq!(t.backup().and_then(|b| b.files_from()), Some("/f"));
         assert_eq!(t.call_names(), vec!["other"]);
         assert_eq!(t.backup_remotes(), vec![("b2:bkt", "b2")]);
         assert_eq!(cfg.tasks[1].call_names(), vec!["docs"]);
