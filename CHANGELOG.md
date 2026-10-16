@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/dantuck/vivo/compare/v0.16.0...v0.16.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **update:** skip releases without a binary for this platform ([9b9578d](https://github.com/dantuck/vivo/commit/9b9578dc71b038bfa8338cf8b63b293bf187ce41))
+
 ## [0.16.0](https://github.com/dantuck/vivo/compare/v0.15.1...v0.16.0) (2026-10-16)
 
 
