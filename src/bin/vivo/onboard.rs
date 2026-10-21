@@ -121,7 +121,7 @@ pub fn run_backup(vivo_config: &VivoConfig, config_path: &str, secrets_path: &st
                 .unwrap_or(&backup_config.default_task);
 
             match backup_config.tasks.iter().find(|t| t.name == task_name) {
-                Some(task) => task.run(vivo_config, &backup_config.tasks, &secrets.credentials),
+                Some(task) => task.run(vivo_config, &backup_config.tasks, &secrets),
                 None => {
                     eprintln!("error: task '{task_name}' not found in config");
                     false

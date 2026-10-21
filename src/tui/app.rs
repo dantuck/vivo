@@ -22,8 +22,20 @@ impl Pane {
     }
 }
 
+/// The fields backed by `EditTaskSpec`, in row order.
 pub const FIELD_NAMES: &[&str] =
     &["Name", "Description", "Repo", "Directory", "Exclude file", "Files from"];
+
+/// Rows after those, edited on their own: they are not part of `EditTaskSpec`.
+pub const EXTRA_FIELD_NAMES: &[&str] = &["Schedule", "Password profile"];
+
+/// Index of the "Schedule" row.
+pub const FIELD_SCHEDULE: usize = FIELD_NAMES.len();
+/// Index of the "Password profile" row.
+pub const FIELD_PASSWORD_PROFILE: usize = FIELD_NAMES.len() + 1;
+
+/// Number of rows in the Fields pane.
+pub const FIELD_COUNT: usize = FIELD_NAMES.len() + EXTRA_FIELD_NAMES.len();
 
 pub struct TaskEntry {
     pub name: String,
@@ -32,8 +44,38 @@ pub struct TaskEntry {
     pub directory: Option<String>,
     pub exclude_file: Option<String>,
     pub files_from: Option<String>,
+    /// `daily 02:00` / `weekly sun 03:30`, as written to the config.
+    pub schedule: Option<String>,
+    pub password_profile: Option<String>,
+    /// Settings with no row of their own: shown read-only, edited in the config file.
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub before: Vec<String>,
+    pub steps: Option<String>,
     pub remotes: Vec<RemoteEntry>,
     pub calls: Vec<String>,
+}
+
+impl TaskEntry {
+    /// One line per extra setting this task has, for the read-only summary.
+    pub fn detail_lines(&self) -> Vec<String> {
+        let list = |label: &str, items: &[String], unit: &str| -> Option<String> {
+            let first = items.first()?;
+            Some(match items.len() {
+                1 => format!("{label}{first}"),
+                n => format!("{label}{first} (+{} more {unit})", n - 1),
+            })
+        };
+        [
+            list("Include  ", &self.include, "paths"),
+            list("Exclude  ", &self.exclude, "patterns"),
+            list("Before   ", &self.before, "commands"),
+            self.steps.as_ref().map(|s| format!("Steps    {s}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
 }
 
 pub struct RemoteEntry {
@@ -41,6 +83,7 @@ pub struct RemoteEntry {
     pub credentials: String,
     pub mc_max_workers: Option<u32>,
     pub mc_limit_upload: Option<String>,
+    pub limit_upload: Option<String>,
 }
 
 pub struct App {
@@ -72,6 +115,12 @@ impl App {
                     directory: backup.and_then(|b| b.directory()).map(str::to_owned),
                     exclude_file: backup.and_then(|b| b.exclude_file()).map(str::to_owned),
                     files_from: backup.and_then(|b| b.files_from()).map(str::to_owned),
+                    schedule: t.schedule().map(|w| w.to_string()),
+                    password_profile: t.password_profile().map(str::to_owned),
+                    include: backup.map(|b| b.include().to_vec()).unwrap_or_default(),
+                    exclude: backup.map(|b| b.exclude().to_vec()).unwrap_or_default(),
+                    before: t.before_commands().to_vec(),
+                    steps: backup.and_then(|b| b.steps().summary()),
                     remotes: t
                         .remotes()
                         .iter()
@@ -80,6 +129,7 @@ impl App {
                             credentials: r.credentials.clone(),
                             mc_max_workers: r.mc_max_workers,
                             mc_limit_upload: r.mc_limit_upload.clone(),
+                            limit_upload: r.limit_upload.clone(),
                         })
                         .collect(),
                     calls: t.call_names().to_vec(),
@@ -152,7 +202,7 @@ impl App {
     fn pane_len(&self, pane: Pane) -> usize {
         match pane {
             Pane::Tasks => self.tasks.len(),
-            Pane::Fields => FIELD_NAMES.len(),
+            Pane::Fields => FIELD_COUNT,
             Pane::Remotes => self.current_remotes().len(),
             Pane::Calls => self.current_calls().len(),
         }
@@ -186,5 +236,92 @@ impl App {
             let selected = self.selection_mut(pane);
             *selected = (*selected).min(last);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KDL: &str = r#"default-task "photos"
+tasks {
+    task "photos" {
+        schedule "weekly sun 03:30"
+        before "! pgrep -x Photos"
+        before "echo hi"
+        backup {
+            repo "/r/photos"
+            directory "/d"
+            password-profile "photos"
+            include "/a"
+            include "/b"
+            include "/c"
+            exclude "**/*.tmp"
+            steps {
+                check { every "weekly"; subset "5%" }
+                sync { every "daily"; window "01:00-06:00" }
+            }
+            remote "rustfs:https://h/p" {
+                credentials "rustfs"
+                limit-upload "20MiB"
+            }
+        }
+    }
+    task "plain" {
+        backup { repo "/r/plain"
+directory "/d" }
+    }
+    task "all" { calls "plain" }
+}"#;
+
+    fn app() -> App {
+        App::new(&BackupConfig::parse("t.kdl", KDL).unwrap(), "t.kdl".to_string())
+    }
+
+    #[test]
+    fn entries_carry_the_new_settings() {
+        let app = app();
+        let photos = &app.tasks[0];
+        assert_eq!(photos.schedule.as_deref(), Some("weekly sun 03:30"));
+        assert_eq!(photos.password_profile.as_deref(), Some("photos"));
+        assert_eq!(photos.include, ["/a", "/b", "/c"]);
+        assert_eq!(photos.exclude, ["**/*.tmp"]);
+        assert_eq!(photos.before.len(), 2);
+        assert_eq!(photos.steps.as_deref(), Some("check weekly (5%) \u{b7} sync daily 01:00-06:00"));
+        assert_eq!(photos.remotes[0].limit_upload.as_deref(), Some("20MiB"));
+
+        let plain = &app.tasks[1];
+        assert!(plain.schedule.is_none() && plain.password_profile.is_none() && plain.steps.is_none());
+        assert!(plain.include.is_empty() && plain.before.is_empty());
+        // a calls-only task has none of the backup settings
+        assert!(app.tasks[2].password_profile.is_none() && app.tasks[2].include.is_empty());
+    }
+
+    #[test]
+    fn detail_lines_summarize_what_has_no_row() {
+        let app = app();
+        assert_eq!(
+            app.tasks[0].detail_lines(),
+            [
+                "Include  /a (+2 more paths)",
+                "Exclude  **/*.tmp",
+                "Before   ! pgrep -x Photos (+1 more commands)",
+                "Steps    check weekly (5%) \u{b7} sync daily 01:00-06:00",
+            ]
+        );
+        assert!(app.tasks[1].detail_lines().is_empty(), "nothing extra, so no summary block");
+    }
+
+    #[test]
+    fn the_fields_pane_reaches_the_new_rows() {
+        let mut app = app();
+        app.focused_pane = Pane::Fields;
+        for _ in 0..20 {
+            app.move_selection(1);
+        }
+        assert_eq!(app.selected_field, FIELD_COUNT - 1);
+        assert_eq!(app.selected_field, FIELD_PASSWORD_PROFILE);
+        assert_eq!(FIELD_SCHEDULE + 1, FIELD_PASSWORD_PROFILE);
+        assert_eq!(FIELD_COUNT, 8);
     }
 }

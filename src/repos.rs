@@ -61,6 +61,7 @@ pub fn load(config_path: &str, secrets_path: &str) -> Result<(BackupConfig, Secr
     if is_placeholder_password(&secrets.restic_password) {
         return Err("restic_password is not set — run `vivo secrets edit`".to_string());
     }
+    config.check_password_profiles(&secrets)?;
     Ok((config, secrets))
 }
 
@@ -101,8 +102,12 @@ pub fn backup_tasks<'a>(config: &'a BackupConfig, task: Option<&str>) -> Result<
 /// whose URL vivo doesn't understand is reported and left out.
 pub fn targets_for(task: &Task, secrets: &Secrets) -> Vec<RepoTarget> {
     let Some(backup) = task.backup() else { return Vec::new() };
+    let Some(password) = secrets.password_for(backup.password_profile()) else {
+        eprintln!("warning: skipping task '{}': {}", task.name, crate::config::missing_profile(backup.password_profile().unwrap_or_default()));
+        return Vec::new();
+    };
     let with_password = |mut env: HashMap<String, String>| {
-        env.insert("RESTIC_PASSWORD".to_string(), secrets.restic_password.clone());
+        env.insert("RESTIC_PASSWORD".to_string(), password.to_string());
         env
     };
 
@@ -131,6 +136,30 @@ pub fn targets_for(task: &Task, secrets: &Secrets) -> Vec<RepoTarget> {
         });
     }
     out
+}
+
+/// Picks one of a task's repositories without prompting. `from` is `local`
+/// (the task's own repository, whether or not it exists yet) or a configured
+/// remote URL. With no `from`, the local repository if it exists, else an error
+/// that lists the remotes to choose from.
+pub fn find_source(targets: &[RepoTarget], from: Option<&str>) -> Result<RepoTarget, String> {
+    let remotes = || targets.iter().filter(|t| !t.is_local).map(|t| t.config_url.as_str()).collect::<Vec<_>>();
+    match from {
+        Some("local") => targets.iter().find(|t| t.is_local).cloned().ok_or_else(|| "this task has no local repository".to_string()),
+        Some(url) => targets
+            .iter()
+            .find(|t| !t.is_local && (t.config_url == url || t.restic_url == url))
+            .cloned()
+            .ok_or_else(|| format!("'{url}' is not one of this task's repositories (use 'local' or a configured remote URL)")),
+        None => targets.iter().find(|t| t.is_local).filter(|t| t.exists()).cloned().ok_or_else(|| {
+            let remotes = remotes();
+            if remotes.is_empty() {
+                "there is no local repository yet and no remote is configured".to_string()
+            } else {
+                format!("there is no local repository here; pass --from <remote URL> ({})", remotes.join(", "))
+            }
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,5 +271,53 @@ remote "rustfs:https://h/bucket" { credentials "rustfs" } } }
         assert_eq!(s[0].short_id, "a");
         assert_eq!(s[1].short_id, "b");
         assert!(parse_snapshots(b"null").unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_source_picks_local_or_a_named_remote() {
+        let config = BackupConfig::parse("t.kdl", KDL).unwrap();
+        let targets = targets_for(&config.tasks[0], &secrets());
+
+        // an explicit `local` is returned even before the repository exists
+        assert!(find_source(&targets, Some("local")).unwrap().is_local);
+        // remotes match by config URL or by the URL restic uses
+        assert_eq!(find_source(&targets, Some("rustfs:https://h/bucket")).unwrap().restic_url, "s3:https://h/bucket");
+        assert!(find_source(&targets, Some("s3:https://h/bucket")).is_ok());
+        assert!(find_source(&targets, Some("b2:nope")).unwrap_err().contains("not one of this task's repositories"));
+
+        // with no `from`, a local repository that doesn't exist is not silently picked
+        let err = find_source(&targets, None).unwrap_err();
+        assert!(err.contains("no local repository") && err.contains("rustfs:https://h/bucket"), "{err}");
+    }
+
+    #[test]
+    fn find_source_defaults_to_an_existing_local_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config"), "").unwrap();
+        let kdl = format!(
+            "default-task \"d\"\ntasks {{ task \"d\" {{ backup {{ repo \"{}\"\ndirectory \"/d\" }} }} }}",
+            dir.path().display()
+        );
+        let config = BackupConfig::parse("t.kdl", &kdl).unwrap();
+        let targets = targets_for(&config.tasks[0], &secrets());
+        assert!(find_source(&targets, None).unwrap().is_local);
+    }
+
+    #[test]
+    fn targets_use_the_tasks_password_profile() {
+        let kdl = "default-task \"p\"\ntasks {\n task \"p\" { backup { repo \"/r/p\"\ndirectory \"/d\"\npassword-profile \"photos\"\nremote \"rustfs:https://h/p\" { credentials \"rustfs\" } } }\n task \"d\" { backup { repo \"/r/d\"\ndirectory \"/d\" } }\n}";
+        let config = BackupConfig::parse("t.kdl", kdl).unwrap();
+        let s = parse_secrets("restic_password: global\npasswords:\n  photos: pw-photos\ncredentials:\n  rustfs:\n    AWS_ACCESS_KEY_ID: k\n").unwrap();
+
+        // the local repo and its remote copy both use the profile's password
+        let photos = targets_for(&config.tasks[0], &s);
+        assert_eq!(photos.len(), 2);
+        assert!(photos.iter().all(|t| t.env["RESTIC_PASSWORD"] == "pw-photos"));
+        // a task without a profile keeps the global one
+        assert_eq!(targets_for(&config.tasks[1], &s)[0].env["RESTIC_PASSWORD"], "global");
+
+        // a profile that is not in the secrets yields no targets rather than the wrong password
+        let no_profile = parse_secrets("restic_password: global\n").unwrap();
+        assert!(targets_for(&config.tasks[0], &no_profile).is_empty());
     }
 }

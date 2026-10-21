@@ -10,6 +10,8 @@ pub struct RustfsBackend {
     pub(super) subpath: String,
     pub(crate) mc_max_workers: Option<u32>,
     pub(crate) mc_limit_upload: Option<String>,
+    /// `limit-upload`, in KiB/s: `mc --limit-upload` or `rclone --bwlimit`.
+    pub(crate) limit_upload_kib: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,6 +155,9 @@ impl RustfsBackend {
         if let Some(ref limit) = self.mc_limit_upload {
             extra.push("--limit-upload".to_string());
             extra.push(limit.clone());
+        } else if let Some(kib) = self.limit_upload_kib {
+            extra.push("--limit-upload".to_string());
+            extra.push(format!("{kib}KiB"));
         }
         extra
     }
@@ -241,6 +246,9 @@ impl RustfsBackend {
     }
 
     fn sync_aws(&self, local_repo: &str, env: &HashMap<String, String>) -> Result<(), String> {
+        if self.limit_upload_kib.is_some() {
+            eprintln!("[warn] limit-upload is ignored: the aws CLI has no bandwidth option (install mc or rclone)");
+        }
         self.ensure_bucket_aws(env)?;
         let dest = self.s3_dest();
         self.run_sync_command(
@@ -255,16 +263,19 @@ impl RustfsBackend {
         let rclone_env = Self::rclone_env(env);
 
         self.ensure_bucket_rclone(&rclone_env)?;
-        self.run_sync_command(
-            "rclone",
-            &[
-                "sync", "--delete-during", "--size-only",
-                local_repo, &dest,
-                "--s3-provider", "Other",
-                "--s3-endpoint", &self.endpoint,
-            ],
-            &rclone_env,
-        )
+        let mut args: Vec<String> = [
+            "sync", "--delete-during", "--size-only",
+            local_repo, &dest,
+            "--s3-provider", "Other",
+            "--s3-endpoint", &self.endpoint,
+        ]
+        .map(String::from)
+        .to_vec();
+        if let Some(kib) = self.limit_upload_kib {
+            args.extend(["--bwlimit".to_string(), format!("{kib}k")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run_sync_command("rclone", &args, &rclone_env)
     }
 
     pub fn from_url(url: &str) -> Result<Self, String> {
@@ -304,7 +315,7 @@ impl RustfsBackend {
             return Err(format!("rustfs URL missing bucket (empty bucket): '{url}'"));
         }
 
-        Ok(RustfsBackend { endpoint, bucket, subpath, mc_max_workers: None, mc_limit_upload: None })
+        Ok(RustfsBackend { endpoint, bucket, subpath, mc_max_workers: None, mc_limit_upload: None, limit_upload_kib: None })
     }
 
     /// A backend for `bucket` on `endpoint`, for callers that only need its
@@ -316,6 +327,7 @@ impl RustfsBackend {
             subpath: String::new(),
             mc_max_workers: None,
             mc_limit_upload: None,
+            limit_upload_kib: None,
         }
     }
 
@@ -323,6 +335,7 @@ impl RustfsBackend {
         let mut backend = Self::from_url(&remote.url)?;
         backend.mc_max_workers = remote.mc_max_workers;
         backend.mc_limit_upload = remote.mc_limit_upload.clone();
+        backend.limit_upload_kib = remote.limit_upload_kib();
         Ok(backend)
     }
 }
@@ -505,6 +518,7 @@ mod tests {
             subpath: String::new(),
             mc_max_workers: Some(4),
             mc_limit_upload: None,
+            limit_upload_kib: None,
         };
         let args = b.mc_mirror_args();
         assert_eq!(args, vec!["--max-workers", "4"]);
@@ -518,6 +532,7 @@ mod tests {
             subpath: String::new(),
             mc_max_workers: None,
             mc_limit_upload: Some("5MiB".to_string()),
+            limit_upload_kib: None,
         };
         let args = b.mc_mirror_args();
         assert_eq!(args, vec!["--limit-upload", "5MiB"]);
@@ -531,6 +546,7 @@ mod tests {
             subpath: String::new(),
             mc_max_workers: Some(2),
             mc_limit_upload: Some("10MiB".to_string()),
+            limit_upload_kib: None,
         };
         let args = b.mc_mirror_args();
         assert_eq!(args, vec!["--max-workers", "2", "--limit-upload", "10MiB"]);
@@ -541,5 +557,17 @@ mod tests {
         let b = RustfsBackend::from_url("rustfs:https://host/bucket").unwrap();
         assert!(b.mc_max_workers.is_none());
         assert!(b.mc_limit_upload.is_none());
+    }
+
+    #[test]
+    fn mc_mirror_args_use_limit_upload_unless_mc_limit_upload_is_set() {
+        let mut b = RustfsBackend::from_url("rustfs:http://h/b").unwrap();
+        assert!(b.mc_mirror_args().is_empty());
+        b.limit_upload_kib = Some(20480);
+        assert_eq!(b.mc_mirror_args(), ["--limit-upload", "20480KiB"]);
+        b.mc_max_workers = Some(2);
+        assert_eq!(b.mc_mirror_args(), ["--max-workers", "2", "--limit-upload", "20480KiB"]);
+        b.mc_limit_upload = Some("5MiB".into());
+        assert_eq!(b.mc_mirror_args(), ["--max-workers", "2", "--limit-upload", "5MiB"]);
     }
 }

@@ -14,14 +14,7 @@ use crate::util::{interactive, prompt, CmdResult};
 /// repository, or — when it is gone, as on a new machine — an off-site copy.
 fn choose_source(targets: Vec<RepoTarget>, from: Option<&str>) -> Result<RepoTarget, crate::util::Stop> {
     if let Some(from) = from {
-        let found = if from == "local" {
-            targets.iter().find(|t| t.is_local)
-        } else {
-            targets.iter().find(|t| !t.is_local && (t.config_url == from || t.restic_url == from))
-        };
-        return found
-            .cloned()
-            .ok_or_else(|| format!("'{from}' is not one of this task's repositories (use 'local' or a configured remote URL)").into());
+        return Ok(repos::find_source(&targets, Some(from))?);
     }
 
     let local = targets.iter().find(|t| t.is_local).filter(|t| t.exists());

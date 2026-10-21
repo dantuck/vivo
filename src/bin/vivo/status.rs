@@ -38,7 +38,9 @@ fn judge_age(report: &mut Report, label: &str, what: &str, at: Option<i64>, max_
 /// One task's targets, each with its newest snapshot (local repositories only).
 type Checked = (String, Vec<(RepoTarget, Option<Result<Vec<Snapshot>, String>>)>);
 
-fn check_task(report: &mut Report, (task_name, targets): Checked, state: &State, max_secs: i64) {
+fn check_task(report: &mut Report, (task_name, targets): Checked, state: &State, max_secs: i64, sync_every: i64) {
+    // A remote that only syncs weekly is not stale after two days.
+    let remote_max_secs = max_secs + sync_every;
     println!("\n{}", task_name.bold());
     let recorded: Option<&TaskState> = state.tasks.get(&task_name);
 
@@ -59,6 +61,12 @@ fn check_task(report: &mut Report, (task_name, targets): Checked, state: &State,
             continue;
         };
         match &r.error {
+            // Paused at the end of its sync window: it resumes by itself, so only
+            // an old last good sync is a problem.
+            Some(_) if r.interrupted => {
+                println!("  {} paused {} when its sync window closed; resumes next run", "·".dimmed(), ago(now() - r.at));
+                judge_age(report, &target.config_url, "last complete sync", r.last_ok, remote_max_secs);
+            }
             Some(e) => report.bad(
                 &target.config_url,
                 &format!(
@@ -67,7 +75,7 @@ fn check_task(report: &mut Report, (task_name, targets): Checked, state: &State,
                     r.last_ok.map_or("never".to_string(), |t| ago(now() - t)),
                 ),
             ),
-            None => judge_age(report, &target.config_url, "synced", r.last_ok, max_secs),
+            None => judge_age(report, &target.config_url, "synced", r.last_ok, remote_max_secs),
         }
         match &r.recovery {
             Some(RecoveryState::Current { at, .. }) => report.good("  recovery copy", &format!("saved {}", ago(now() - at))),
@@ -105,13 +113,27 @@ pub fn cmd_status(config_path: &str, secrets_path: &str, args: &ArgMatches) -> C
             .filter(|t| t.task == task.name)
             .map(|t| (t.clone(), if t.is_local { latest.next().flatten() } else { None }))
             .collect();
-        check_task(&mut report, (task.name.clone(), checked), &state, max_secs);
+        let sync_every = task
+            .backup()
+            .and_then(|b| b.steps().policy(&vivo::step::Step::Sync))
+            .and_then(|p| p.every_secs())
+            .unwrap_or(0);
+        check_task(&mut report, (task.name.clone(), checked), &state, max_secs, sync_every);
     }
 
     println!();
-    match vivo::schedule::installed() {
-        Some(i) => println!("{} Scheduled daily{} via {}.", OK.green(), i.at.map(|t| format!(" at {t}")).unwrap_or_default(), i.backend.name()),
-        None => println!("{} Not scheduled — run `vivo schedule add` so backups happen on their own.", WARN.yellow()),
+    let units = vivo::schedule::installed_all();
+    if units.is_empty() {
+        println!("{} Not scheduled — run `vivo schedule add` so backups happen on their own.", WARN.yellow());
+    } else {
+        let list: Vec<String> = units
+            .iter()
+            .map(|u| match u.when {
+                Some(w) => format!("{} ({w})", u.task.as_deref().unwrap_or("default task")),
+                None => u.task.clone().unwrap_or_else(|| "default task".to_string()),
+            })
+            .collect();
+        println!("{} Scheduled via {}: {}.", OK.green(), units[0].backend.name(), list.join(", "));
     }
 
     println!(

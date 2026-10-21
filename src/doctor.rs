@@ -650,17 +650,16 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
 
     if let Some(ref secrets) = maybe_secrets {
         if let Some(ref backup_config) = maybe_backup_config {
-            for (url, creds_name) in backup_config.all_remotes() {
-                let r = check_remote_connectivity(
-                    url,
-                    creds_name,
-                    &secrets.credentials,
-                    &secrets.restic_password,
-                );
-                if matches!(r.status, CheckStatus::Warn) {
-                    warnings += 1;
+            for task in &backup_config.tasks {
+                // A task with its own repository password is checked with that one.
+                let password = secrets.password_for(task.password_profile()).unwrap_or(&secrets.restic_password);
+                for (url, creds_name) in task.backup_remotes() {
+                    let r = check_remote_connectivity(url, creds_name, &secrets.credentials, password);
+                    if matches!(r.status, CheckStatus::Warn) {
+                        warnings += 1;
+                    }
+                    results.push(r);
                 }
-                results.push(r);
             }
         }
     }
@@ -766,7 +765,7 @@ tasks {{
     fn check_restic_password_fails_for_placeholder() {
         let secrets = Secrets {
             restic_password: "change-me".to_string(),
-            credentials: HashMap::new(),
+            ..Secrets::default()
         };
         let r = check_restic_password(&secrets);
         assert!(matches!(r.status, CheckStatus::Fail));
@@ -776,7 +775,7 @@ tasks {{
     fn check_restic_password_ok_for_real_password() {
         let secrets = Secrets {
             restic_password: "hunter2".to_string(),
-            credentials: HashMap::new(),
+            ..Secrets::default()
         };
         let r = check_restic_password(&secrets);
         assert!(matches!(r.status, CheckStatus::Ok));

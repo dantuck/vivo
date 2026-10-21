@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
-use super::app::{App, Pane};
+use super::app::{App, Pane, FIELD_COUNT};
 
 // Palette. ANSI "bright black" (DarkGray) is nearly invisible on several
 // popular dark themes, so text uses a fixed 256-color gray instead and
@@ -31,14 +31,17 @@ fn header(focused: bool) -> Style {
     if focused { ACCENT } else { MUTED }
 }
 
-// Pre-padded to 14 chars — avoids a format! allocation per field per frame.
-const FIELD_LABELS: [&str; 6] = [
-    "Name          ",
-    "Description   ",
-    "Repo          ",
-    "Directory     ",
-    "Exclude file  ",
-    "Files from    ",
+// Pre-padded to 18 chars (the longest label plus two spaces) — avoids a
+// format! allocation per field per frame.
+const FIELD_LABELS: [&str; FIELD_COUNT] = [
+    "Name              ",
+    "Description       ",
+    "Repo              ",
+    "Directory         ",
+    "Exclude file      ",
+    "Files from        ",
+    "Schedule          ",
+    "Password profile  ",
 ];
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -112,18 +115,23 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let remotes_min = (1 + app.current_remotes().len()) as u16;
     let calls_min = (1 + app.current_calls().len()) as u16;
+    let details = app.tasks.get(app.selected_task).map(|t| t.detail_lines()).unwrap_or_default();
+    // A header line plus one per setting, or nothing when there are none.
+    let details_height = if details.is_empty() { 0 } else { 1 + details.len() as u16 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
+            Constraint::Length(FIELD_COUNT as u16),
+            Constraint::Length(details_height),
             Constraint::Min(remotes_min),
             Constraint::Min(calls_min),
         ])
         .split(inner);
 
     draw_task_fields(f, app, chunks[0]);
-    draw_remotes_list(f, app, chunks[1]);
-    draw_calls_list(f, app, chunks[2]);
+    draw_task_details(f, &details, chunks[1]);
+    draw_remotes_list(f, app, chunks[2]);
+    draw_calls_list(f, app, chunks[3]);
 }
 
 fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
@@ -136,13 +144,15 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
     let label_style = MUTED;
     let highlight = selection(in_fields);
 
-    let values: [Option<&str>; 6] = [
+    let values: [Option<&str>; FIELD_COUNT] = [
         Some(task.name.as_str()),
         task.description.as_deref(),
         task.repo.as_deref(),
         task.directory.as_deref(),
         task.exclude_file.as_deref(),
         task.files_from.as_deref(),
+        task.schedule.as_deref(),
+        task.password_profile.as_deref(),
     ];
 
     let lines: Vec<Line> = FIELD_LABELS
@@ -159,6 +169,16 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Settings that have no row of their own, read-only; `o` opens the config to change them.
+fn draw_task_details(f: &mut Frame, details: &[String], area: Rect) {
+    if details.is_empty() {
+        return;
+    }
+    let mut lines = vec![Line::from(Span::styled("Also set (press o to edit the file):", MUTED))];
+    lines.extend(details.iter().map(|d| Line::from(Span::raw(format!("  {d}")))));
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -182,7 +202,10 @@ fn draw_remotes_list(f: &mut Frame, app: &App, area: Rect) {
 
     let items: Vec<ListItem> = remotes
         .iter()
-        .map(|r| ListItem::new(format!("  {}  [{}]", r.url, r.credentials)))
+        .map(|r| {
+            let limit = r.limit_upload.as_deref().map(|l| format!("  (limit {l}/s)")).unwrap_or_default();
+            ListItem::new(format!("  {}  [{}]{limit}", r.url, r.credentials))
+        })
         .collect();
 
     let list = List::new(items)
@@ -247,4 +270,74 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let para = Paragraph::new(Line::from(vec![Span::raw(format!(" {status}"))]))
         .style(MUTED);
     f.render_widget(para, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backup_config::BackupConfig;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    const KDL: &str = r#"default-task "photos"
+tasks {
+    task "photos" {
+        schedule "weekly sun 03:30"
+        before "! pgrep -x Photos"
+        backup {
+            repo "/r/photos"
+            directory "/d"
+            password-profile "photos"
+            include "/a"
+            include "/b"
+            steps { sync { every "daily"; window "01:00-06:00" } }
+            remote "rustfs:https://h/p" { credentials "rustfs"
+limit-upload "20MiB" }
+        }
+    }
+    task "plain" { backup { repo "/r/plain"
+directory "/d" } }
+}"#;
+
+    /// The screen as text, one string per row.
+    fn render(selected_task: usize) -> Vec<String> {
+        let mut app = App::new(&BackupConfig::parse("t.kdl", KDL).unwrap(), "t.kdl".to_string());
+        app.selected_task = selected_task;
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn shows_the_new_settings_for_a_task_that_has_them() {
+        let screen = render(0).join("\n");
+        for expected in [
+            "Schedule",
+            "weekly sun 03:30",
+            "photos",
+            "Also set (press o to edit the file):",
+            "Include  /a (+1 more paths)",
+            "Before   ! pgrep -x Photos",
+            "Steps    sync daily 01:00-06:00",
+            "(limit 20MiB/s)",
+        ] {
+            assert!(screen.contains(expected), "missing {expected:?} in:\n{screen}");
+        }
+    }
+
+    #[test]
+    fn a_plain_task_shows_no_summary_block_and_empty_new_rows() {
+        let screen = render(1).join("\n");
+        assert!(screen.contains("Schedule") && screen.contains("(none)"));
+        assert!(!screen.contains("Also set"), "no extra settings, so no block:\n{screen}");
+        assert!(!screen.contains("(limit"));
+    }
+
+    #[test]
+    fn the_remotes_and_calls_panes_still_fit_below_the_new_rows() {
+        let screen = render(0).join("\n");
+        assert!(screen.contains("Remotes (1):") && screen.contains("Calls (0):"), "{screen}");
+    }
 }

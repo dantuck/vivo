@@ -12,13 +12,41 @@ pub struct VivoConfig {
     pub config_file: Option<PathBuf>,
     pub dry_run: bool,
     pub start_step: Step,
+    /// Run every step, ignoring each backup's `steps` cadence.
+    pub force: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Secrets {
     pub restic_password: String,
+    /// Extra restic repository passwords by name, for backups that set
+    /// `password-profile`. A backup without one uses `restic_password`.
+    #[serde(default)]
+    pub passwords: HashMap<String, String>,
     #[serde(default)]
     pub credentials: HashMap<String, HashMap<String, String>>,
+}
+
+impl Secrets {
+    /// The repository password for a backup's `password-profile`; `None` if
+    /// that profile isn't in the secrets.
+    pub fn password_for(&self, profile: Option<&str>) -> Option<&str> {
+        match profile {
+            None => Some(&self.restic_password),
+            Some(name) => self.passwords.get(name).map(String::as_str),
+        }
+    }
+
+    /// A copy whose `restic_password` is the one for `profile`, for code that
+    /// takes a single password (remote tests, doctor).
+    pub fn for_profile(&self, profile: Option<&str>) -> Result<Secrets, String> {
+        let password = self.password_for(profile).ok_or_else(|| missing_profile(profile.unwrap_or_default()))?;
+        Ok(Secrets { restic_password: password.to_string(), ..self.clone() })
+    }
+}
+
+pub fn missing_profile(name: &str) -> String {
+    format!("password profile '{name}' is not in the secrets — add it under `passwords:` with `vivo secrets edit`")
 }
 
 fn parse_step(s: &str) -> Result<Step, String> {
@@ -47,6 +75,12 @@ pub fn build_cli() -> Command {
                 .help("Start at step: backup, check, forget, sync")
                 .value_parser(parse_step)
                 .required(false),
+        )
+        .arg(
+            Arg::new("force")
+                .long("force")
+                .help("Run every step, ignoring the `steps` cadence in the config")
+                .action(ArgAction::SetTrue),
         )
         .subcommand(Command::new("init").about("Set up vivo for first use"))
         .subcommand(
@@ -103,11 +137,17 @@ pub fn build_cli() -> Command {
         )
         .subcommand(
             Command::new("schedule")
-                .about("Run backups automatically every day (launchd, systemd or cron)")
+                .about("Run backups automatically (launchd, systemd or cron), one schedule per task")
                 .subcommand(
                     Command::new("add")
-                        .about("Install the daily schedule (replaces an existing one)")
+                        .about("Schedule a task (writes `schedule` into its config) or, with no --task, the default task")
                         .arg(Arg::new("at").long("at").value_name("HH:MM").help("Time of day, 24-hour (default: 02:00)"))
+                        .arg(
+                            Arg::new("weekly")
+                                .long("weekly")
+                                .value_name("DAY")
+                                .help("Run once a week on DAY (sun, mon, ...) instead of every day"),
+                        )
                         .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Task to run (default: the config's default task)"))
                         .arg(
                             Arg::new("print")
@@ -116,8 +156,22 @@ pub fn build_cli() -> Command {
                                 .help("Show what would be installed without installing it"),
                         ),
                 )
-                .subcommand(Command::new("remove").about("Remove the schedule"))
-                .subcommand(Command::new("status").about("Show whether a schedule is installed")),
+                .subcommand(
+                    Command::new("apply")
+                        .about("Install, update and remove schedules so they match the `schedule` nodes in the config")
+                        .arg(
+                            Arg::new("print")
+                                .long("print")
+                                .action(ArgAction::SetTrue)
+                                .help("Show what would be installed without changing anything"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove one task's schedule (and its `schedule` config node), or every schedule")
+                        .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Only this task (default: remove all schedules)")),
+                )
+                .subcommand(Command::new("status").about("Show installed schedules and whether they match the config")),
         )
         .subcommand(
             Command::new("status")
@@ -191,12 +245,49 @@ pub fn build_cli() -> Command {
         .subcommand(Command::new("manage").about("Open the interactive config manager (TUI)"))
         .subcommand(
             Command::new("mount")
-                .about("Mount a backup repository as a FUSE filesystem")
+                .about("Mount a backup repository read-only as a FUSE filesystem (pick from a menu, or name it with --task)")
                 .arg(
                     Arg::new("path")
                         .help("Mount point directory (default: auto temp dir under /tmp)")
                         .required(false),
+                )
+                .arg(Arg::new("task").long("task").short('t').value_name("TASK").help("Mount this task's repository without prompting"))
+                .arg(
+                    Arg::new("from")
+                        .long("from")
+                        .value_name("local|URL")
+                        .requires("task")
+                        .help("With --task: the local repository (default) or a remote URL"),
+                )
+                .arg(Arg::new("host").long("host").value_name("HOST").help("Only show snapshots taken on this host"))
+                .arg(
+                    Arg::new("snapshot-path")
+                        .long("snapshot-path")
+                        .value_name("PATH")
+                        .action(ArgAction::Append)
+                        .help("Only show snapshots that include this path (repeatable)"),
                 ),
+        )
+        .subcommand(
+            Command::new("verify")
+                .about("Check that a backup repository is intact by reading data back (default: a 5% sample of the local repository)")
+                .arg(Arg::new("task").value_name("TASK").help("Task to verify (default: all)"))
+                .arg(
+                    Arg::new("from")
+                        .long("from")
+                        .value_name("local|URL")
+                        .conflicts_with("remotes")
+                        .help("Verify the local repository (default) or this remote URL"),
+                )
+                .arg(
+                    Arg::new("remotes")
+                        .long("remotes")
+                        .action(ArgAction::SetTrue)
+                        .help("Verify every off-site copy instead of the local repository"),
+                )
+                .arg(Arg::new("sample").long("sample").value_name("5%|1/10|2G").help("Read back this much data (default: 5%)"))
+                .arg(Arg::new("quick").long("quick").action(ArgAction::SetTrue).help("Check structure and indexes only; read no data"))
+                .arg(Arg::new("full").long("full").action(ArgAction::SetTrue).help("Read back all data (slow; downloads everything from a remote)")),
         )
         .subcommand(
             Command::new("task")
@@ -302,6 +393,8 @@ impl VivoConfig {
                 .get_one::<Step>("start-step")
                 .cloned()
                 .unwrap_or_default(),
+            // Naming a start step is an explicit request to run from there.
+            force: matches.get_flag("force") || matches.contains_id("start-step"),
         }
     }
 
