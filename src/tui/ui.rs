@@ -116,12 +116,19 @@ fn draw_task_detail(f: &mut Frame, app: &App, area: Rect) {
     let remotes_min = (1 + app.current_remotes().len()) as u16;
     let calls_min = (1 + app.current_calls().len()) as u16;
     let details = app.tasks.get(app.selected_task).map(|t| t.detail_lines()).unwrap_or_default();
-    // A header line plus one per setting, or nothing when there are none.
-    let details_height = if details.is_empty() { 0 } else { 1 + details.len() as u16 };
+
+    // On a short terminal the fields come first, then the remotes and calls
+    // lists at their minimum, and only then the read-only summary.
+    let fields_height = (FIELD_COUNT as u16).min(inner.height);
+    let spare = inner.height.saturating_sub(fields_height).saturating_sub(remotes_min + calls_min);
+    // A header line plus one per setting. All or nothing: a clipped list would
+    // read as if it were the whole list.
+    let wanted = if details.is_empty() { 0 } else { 1 + details.len() as u16 };
+    let details_height = if wanted <= spare { wanted } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(FIELD_COUNT as u16),
+            Constraint::Length(fields_height),
             Constraint::Length(details_height),
             Constraint::Min(remotes_min),
             Constraint::Min(calls_min),
@@ -155,9 +162,15 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
         task.password_profile.as_deref(),
     ];
 
+    // Fewer rows than fields: scroll just far enough to keep the selection visible.
+    let visible = usize::from(area.height).max(1);
+    let offset = app.selected_field.saturating_sub(visible - 1);
+
     let lines: Vec<Line> = FIELD_LABELS
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(i, label)| {
             let selected = i == app.selected_field;
             let value_span = match values[i] {
@@ -300,9 +313,13 @@ directory "/d" } }
 
     /// The screen as text, one string per row.
     fn render(selected_task: usize) -> Vec<String> {
+        render_sized(selected_task, 110, 30)
+    }
+
+    fn render_sized(selected_task: usize, width: u16, height: u16) -> Vec<String> {
         let mut app = App::new(&BackupConfig::parse("t.kdl", KDL).unwrap(), "t.kdl".to_string());
         app.selected_task = selected_task;
-        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|f| draw(f, &app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -339,5 +356,36 @@ directory "/d" } }
     fn the_remotes_and_calls_panes_still_fit_below_the_new_rows() {
         let screen = render(0).join("\n");
         assert!(screen.contains("Remotes (1):") && screen.contains("Calls (0):"), "{screen}");
+    }
+
+    #[test]
+    fn small_terminals_keep_every_field_and_both_lists_visible() {
+        // 60x16 used to squeeze the fields pane to six rows, hiding the new ones.
+        let screen = render_sized(0, 60, 16).join("\n");
+        for expected in ["Schedule", "Password profile", "Remotes (1):", "Calls (0):"] {
+            assert!(screen.contains(expected), "missing {expected:?} in:\n{screen}");
+        }
+        // The read-only summary is what gives way, not the editable rows.
+        assert!(!screen.contains("Also set"), "{screen}");
+    }
+
+    #[test]
+    fn the_summary_returns_when_there_is_room_for_it() {
+        let screen = render_sized(0, 80, 24).join("\n");
+        assert!(screen.contains("Also set") && screen.contains("Steps    sync daily"), "{screen}");
+    }
+
+    #[test]
+    fn a_very_short_terminal_scrolls_the_fields_to_the_selection() {
+        let mut app = App::new(&BackupConfig::parse("t.kdl", KDL).unwrap(), "t.kdl".to_string());
+        app.focused_pane = Pane::Fields;
+        app.selected_field = FIELD_COUNT - 1;
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen: String =
+            (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(screen.contains("Password profile"), "the selected row must be on screen:\n{screen}");
+        assert!(!screen.contains("Name  "), "earlier rows scroll off:\n{screen}");
     }
 }
