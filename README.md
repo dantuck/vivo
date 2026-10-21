@@ -79,16 +79,102 @@ vivo exits non-zero if the backup fails or any remote fails to sync, so schedule
 
 ## Scheduling
 
-```sh
-vivo schedule add              # daily at 02:00 (asks on a terminal; or --at 03:30)
-vivo schedule add --task docs  # schedule one task instead of the default
-vivo schedule status           # is it installed, and when does it run?
-vivo schedule remove
+Each task can have its own schedule, written in the config next to its `backup` block:
+
+```kdl
+task "filecabinet" {
+    schedule "daily 02:00"
+    backup { ... }
+}
+task "photos" {
+    schedule "weekly sun 03:30"
+    backup { ... }
+}
 ```
 
-`vivo schedule` sets up a launchd agent on macOS, a systemd user timer on Linux, or a crontab entry where systemd isn't running. It handles the details that make hand-written jobs fail: the full path to `vivo`, a `PATH` that includes `restic`, `sops` and your sync tool, your custom config/key locations, and a log file (`~/.local/state/vivo/vivo.log`). `vivo init` offers it as its last step. Use `vivo schedule add --print` to see exactly what would be installed.
+```sh
+vivo schedule apply            # make the installed schedules match the config
+vivo schedule add --task photos --at 03:30 --weekly sun   # writes the schedule node, then installs it
+vivo schedule status           # what is installed, and does it match the config?
+vivo schedule remove --task photos   # remove one (and its config node); no --task removes them all
+vivo schedule add              # the original: the default task, daily at 02:00 (asks on a terminal)
+```
+
+`vivo schedule` sets up a launchd agent on macOS, a systemd user timer on Linux, or a crontab entry where systemd isn't running, one per scheduled task. Each runs `vivo <task>`, so that task's [`steps`](#backing-up-photos-and-other-big-media) cadence applies. It handles the details that make hand-written jobs fail: the full path to `vivo`, a `PATH` that includes `restic`, `sops` and your sync tool, your custom config/key locations, and a log file (`~/.local/state/vivo/vivo.log`). `vivo init` offers a daily schedule as its last step. Use `--print` with `add` or `apply` to see exactly what would be installed.
+
+A schedule is `daily HH:MM` or `weekly <day> HH:MM` (`sun`, `mon`, ...). If you rename a task, run `vivo schedule apply`: it removes the old unit and installs the new one.
 
 On macOS, grant the `vivo` binary Full Disk Access (System Settings → Privacy & Security) if you back up Documents, Desktop or other protected folders; anything vivo can't read is skipped with a warning and the rest of the backup still completes. A Mac that is asleep at the scheduled time runs the backup when it wakes.
+
+## Backing up photos and other big media
+
+Photos and video are large and change rarely, so the right rhythm differs from documents: back up often locally, verify and push to remotes less often, and keep long transfers out of working hours. Give such a bucket its own task, repository and (optionally) password:
+
+```kdl
+task "photos" {
+    schedule "daily 02:00"
+    before "! pgrep -x Photos"          // see the Photos library note below
+    backup {
+        repo "$HOME/.restic/repo/photos"
+        password-profile "photos"
+        include "$HOME/Pictures/Archive"
+        include "$HOME/Movies/Raw"
+        exclude "**/*.tmp"
+        exclude "**/Thumbnails"
+        steps {
+            check  { every "weekly"; subset "5%" }
+            forget { every "weekly" }
+            sync   { every "daily"; window "01:00-06:00" }
+        }
+        remote "rustfs:https://host/photos" {
+            credentials "rustfs"
+            limit-upload "20MiB"
+        }
+        remote "b2:my-photos:photos" { credentials "b2" }
+    }
+}
+```
+
+- **Folders.** `include` and `exclude` pick exactly what goes in, alongside `directory`, `files-from` and `exclude-file`.
+- **When each step runs.** `backup` always runs. `check`, `forget` and `sync` can each have `every` (`hourly`, `daily`, `weekly`, `monthly`, or `12h`, `3d`, `2w`); a step that isn't due is skipped and says so. `check` can also have `subset` (`5%`, `1/10` or `2G`), which reads back that much of the data (`restic check --read-data-subset`) instead of only checking structure. A new remote syncs immediately, whatever `every` says. `vivo status` allows for a slow sync cadence. Pass `--force` to run everything once.
+- **Long uploads.** `sync { window "01:00-06:00" }` starts a sync only inside that window (a window like `22:00-06:00` crosses midnight) and stops it when the window closes. The next run picks up where it left off, so a first upload of a big library finishes over several nights. A paused sync is not a failure: `vivo status` shows it as paused. `limit-upload` (above) caps the speed.
+- **Its own key.** `password-profile "photos"` uses `passwords.photos` from `vivo secrets edit`, so a leak of this one password exposes only this bucket. Set it before the first backup: the profile selects a password, it does not change an existing repository's.
+
+Everything is encrypted before it leaves your machine, with or without a profile. The trade-offs worth knowing: a remote only ever holds opaque data, so nothing there can preview your photos (browse them with `vivo mount` or restore them); losing a password means losing that bucket, so store each one with your age key; and restoring a single photo from a remote downloads whole pack files, which costs time and, on some hosts, egress. Verify and browse the local repository routinely and save the remotes for disasters.
+
+### The macOS Photos library
+
+`~/Pictures/Photos Library.photoslibrary` is a package, and its `database/` changes constantly, so a snapshot taken while Photos is open can be inconsistent. Either:
+
+- **Back up the library with Photos closed.** Include `originals/` and `database/`, and refuse to run while Photos is open with a `before` guard (a failing `before` stops the whole task and shows up in `vivo status`):
+
+  ```kdl
+  before "! pgrep -x Photos"
+  backup {
+      include "$HOME/Pictures/Photos Library.photoslibrary/originals"
+      include "$HOME/Pictures/Photos Library.photoslibrary/database"
+      exclude "**/resources/derivatives"   // thumbnails Photos rebuilds
+      ...
+  }
+  ```
+
+- **Or back up exports.** A folder export (for example `osxphotos export`) is plain files, can be backed up at any time, and is the easiest to browse after a restore, at the cost of albums and edits unless you export them too.
+
+Originals alone are always recoverable as ordinary files, but without `database/` you lose albums, edits and metadata. If "Download Originals to this Mac" is off, `originals/` is incomplete: only what is on this Mac is backed up.
+
+## Verifying and browsing backups
+
+```sh
+vivo verify photos                  # read back a 5% sample of the local repository
+vivo verify photos --remotes        # the same, on every off-site copy
+vivo verify photos --from b2:my-photos:photos --sample 1/10
+vivo verify --quick                 # structure only, reads no data;  --full reads everything
+
+vivo mount ~/mnt/photos --task photos                       # the local repository, read-only
+vivo mount ~/mnt/photos --task photos --from rustfs:https://host/photos
+```
+
+`vivo verify` exits non-zero if any repository fails, so it works from a schedule or hook. Checking a remote downloads data, so keep `--sample` small. `vivo mount` needs FUSE (macFUSE or FUSE-T on macOS). Inside the mount, browse `snapshots/latest/` or `ids/<snapshot id>/`; `--host` and `--snapshot-path` only filter which snapshots appear.
 
 ## Is it working? — `vivo status`
 
@@ -158,16 +244,17 @@ Usage: vivo [OPTIONS] [task_name] [COMMAND]
 Commands:
   init       Set up vivo for first use
   status     Show when each task last backed up and synced, and flag problems
-  schedule   Run backups automatically every day
+  schedule   Run backups automatically, one schedule per task
   snapshots  List the snapshots in a task's backup repository
   restore    Restore files from a backup
+  verify     Check that a backup repository is intact by reading data back
   recover    Rebuild config and secrets on a new machine from a remote
   config     Manage backup configuration
   secrets    Manage encrypted secrets
   task       Manage backup tasks
   remote     Manage backup remotes
   doctor     Check system health
-  mount      Mount a backup repository as a FUSE filesystem
+  mount      Mount a backup repository read-only as a FUSE filesystem
   manage     Open the interactive config manager (TUI)
   update     Update vivo to the latest release
 
@@ -179,6 +266,7 @@ Options:
   -d, --debug...                 Enable debug logging
       --dry-run                  Dry run: skip writes and remote sync
   -S, --start-step <STEP>        Skip earlier steps; start at: backup, check, forget, sync
+      --force                    Run every step, ignoring each backup's `steps` cadence and sync window
   -h, --help                     Print help
   -V, --version                  Print version
 ```
@@ -210,9 +298,11 @@ Opens a full-screen config manager with four navigable panes (Tab to cycle):
 | Pane | Keys |
 |---|---|
 | **Tasks** | `a` add · `d` delete · `e` edit all fields · `s` set as default · `o` open in `$EDITOR` |
-| **Fields** | `↑↓` select field · `Enter`/`e` edit field |
+| **Fields** | `↑↓` select field · `Enter`/`e` edit field (including **Schedule** and **Password profile**) |
 | **Remotes** | `a` add · `d` delete · `e` edit · `t` test connection |
 | **Calls** | `a` add · `d` delete · `Ctrl+↑↓` reorder |
+
+Settings without a row of their own (`include`, `exclude`, `before`, `steps`, and a remote's `limit-upload`) are listed read-only under **Also set**; press `o` to change them in your editor. Editing the **Schedule** row only changes the config: run `vivo schedule apply` to install it. The **Password profile** row picks which entry under `passwords:` in the secrets is used, and it must match what the repository was created with.
 
 The default task (run when no task name is given) is marked with `*` in the Tasks pane. Leaving the repo path blank when adding a task creates a calls-only orchestrator task with no backup block.
 
@@ -226,6 +316,8 @@ vivo -S forget      # skip backup/check, run forget then sync
 ```
 
 Steps in order: `backup` → `check` → `forget` → `sync`
+
+A backup can also run its slower steps less often (see [`steps`](#backing-up-photos-and-other-big-media)). `--force`, or naming a step with `-S`, ignores that cadence for one run.
 
 ## Configuration
 
@@ -274,7 +366,11 @@ tasks {
 | `repo` | Path to local restic repository |
 | `directory` | Directory to back up |
 | `files-from` | File containing list of paths to back up (alternative to `directory`) |
+| `include "path"` | Another path to back up (repeatable; combined with `directory` and `files-from`) |
+| `exclude "pattern"` | Pattern to leave out, passed to `restic --exclude` (repeatable) |
 | `exclude-file` | File containing exclude patterns |
+| `steps` | How often `check`, `forget` and `sync` run, and when `sync` may run (see below) |
+| `password-profile "name"` | Use `passwords.<name>` from the secrets instead of the global restic password |
 | `dry-run true` | Per-task dry run override |
 | `remote` | One or more remote destinations (see below) |
 | `retention` | Snapshot retention policy |
@@ -292,6 +388,8 @@ tasks {
 
 | Field | Description |
 |---|---|
+| `schedule "..."` | Run this task automatically: `daily HH:MM` or `weekly <day> HH:MM` (see [Scheduling](#scheduling)) |
+| `before "..."` | Shell command run before the backup (repeatable, via `sh -c`); if one fails, nothing is backed up and `on-failure` runs. Skipped on dry runs |
 | `command "..."` | Shell command to run after backup (via `sh -c`) |
 | `calls "name"` | Run another named task; circular references are detected and skipped |
 | `on-success "..."` | Shell command run when the task finishes without errors (skipped on dry runs) |
@@ -303,6 +401,8 @@ Secrets are stored in a SOPS/age-encrypted YAML file. Default path: `~/.config/v
 
 ```yaml
 restic_password: "your-restic-repo-password"
+passwords:                       # optional: more repository passwords, one per `password-profile`
+  photos: "a-different-repo-password"
 credentials:
   aws:
     AWS_ACCESS_KEY_ID: "..."
@@ -354,6 +454,19 @@ The remote restic repository must be initialized before first sync. `vivo remote
 ```sh
 restic init --repo s3:https://s3.amazonaws.com/my-bucket
 ```
+
+### Limiting upload speed
+
+`limit-upload` caps how fast a remote is written, e.g. so a first photo upload doesn't saturate your connection:
+
+```kdl
+remote "rustfs:https://host/photos" {
+    credentials "rustfs"
+    limit-upload "20MiB"    // per second; 500k, 5M, 2MB/s also work (units are binary)
+}
+```
+
+It works for `s3:` remotes (`restic --limit-upload`) and `rustfs:` remotes (`mc` or `rclone`; the `aws` fallback can't throttle and says so). `b2:` remotes reject it, because the `b2` CLI has no bandwidth option. Use a sync window instead. It replaces `mc-limit-upload`, which still works on its own.
 
 ### Backblaze B2
 
