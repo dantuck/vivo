@@ -6,6 +6,8 @@ use super::{recovery_sibling, ObjectStore, RemoteBackend, AWS_CREDENTIALS};
 
 pub struct S3Backend {
     url: String,
+    /// `restic --limit-upload`, in KiB/s.
+    limit_upload_kib: Option<u64>,
 }
 
 impl S3Backend {
@@ -13,7 +15,21 @@ impl S3Backend {
         if !url.starts_with("s3:") {
             return Err(format!("not an s3 URL: '{url}'"));
         }
-        Ok(S3Backend { url: url.to_string() })
+        Ok(S3Backend { url: url.to_string(), limit_upload_kib: None })
+    }
+
+    pub fn from_remote(remote: &crate::backup_config::backup::Remote) -> Result<Self, String> {
+        Ok(S3Backend { limit_upload_kib: remote.limit_upload_kib(), ..Self::from_url(&remote.url)? })
+    }
+
+    /// The `restic copy` command line, minus its environment.
+    fn copy_args(&self, local_repo: &str) -> Vec<String> {
+        let mut args = vec!["-r".to_string(), self.url.clone()];
+        if let Some(kib) = self.limit_upload_kib {
+            args.extend(["--limit-upload".to_string(), kib.to_string()]);
+        }
+        args.extend(["copy".to_string(), "--from-repo".to_string(), local_repo.to_string()]);
+        args
     }
 }
 
@@ -79,7 +95,7 @@ impl RemoteBackend for S3Backend {
 
         let restic_password = std::env::var("RESTIC_PASSWORD").unwrap_or_default();
         let mut cmd = Command::new("restic");
-        cmd.args(["-r", &self.url, "copy", "--from-repo", local_repo])
+        cmd.args(self.copy_args(local_repo))
             .envs(env)
             .env("RESTIC_FROM_PASSWORD", restic_password);
         let (status, stderr) = super::run_streaming(cmd, "restic")?;
@@ -135,5 +151,16 @@ mod tests {
         let s = S3Backend::from_url("s3:http://localhost:9000/test").unwrap();
         let result = s.sync("/tmp/repo", true, &HashMap::new());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn copy_args_carry_the_upload_limit() {
+        let plain = S3Backend::from_url("s3:http://h/b").unwrap();
+        assert_eq!(plain.copy_args("/repo"), ["-r", "s3:http://h/b", "copy", "--from-repo", "/repo"]);
+        let limited = S3Backend { limit_upload_kib: Some(20480), ..plain };
+        assert_eq!(
+            limited.copy_args("/repo"),
+            ["-r", "s3:http://h/b", "--limit-upload", "20480", "copy", "--from-repo", "/repo"]
+        );
     }
 }

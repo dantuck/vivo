@@ -465,6 +465,27 @@ pub fn add_call(kdl: &str, task_name: &str, call_name: &str) -> Result<String, S
     Ok(doc.to_string())
 }
 
+/// Sets a task's `schedule` node (`daily 02:00`, `weekly sun 03:00`), or
+/// removes it with `None`. The value is validated before it is written.
+pub fn set_task_schedule(kdl: &str, task_name: &str, when: Option<&str>) -> Result<String, String> {
+    if let Some(w) = when {
+        crate::schedule::When::parse(w)?;
+    }
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    upsert_or_remove_child(task.ensure_children(), "schedule", when);
+    Ok(doc.to_string())
+}
+
+/// Sets a backup's `password-profile`, or removes it with `None`.
+pub fn set_backup_password_profile(kdl: &str, task_name: &str, profile: Option<&str>) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    let backup = find_backup(task, task_name)?;
+    upsert_or_remove_child(backup.ensure_children(), "password-profile", profile);
+    Ok(doc.to_string())
+}
+
 pub fn remove_call(kdl: &str, task_name: &str, index: usize) -> Result<String, String> {
     let mut doc = parse(kdl)?;
     let task = find_task(&mut doc, task_name)?;
@@ -1315,5 +1336,58 @@ tasks {
     fn set_default_task_errors_when_task_not_found() {
         let err = set_default_task(TWO_TASKS_KDL, "nonexistent").unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn set_task_schedule_adds_replaces_and_removes() {
+        let kdl = "default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n            repo \"/r\"\n            directory \"/d\"\n        }\n    }\n}\n";
+        let added = set_task_schedule(kdl, "t", Some("weekly sun 03:00")).unwrap();
+        assert!(added.contains(r#"schedule "weekly sun 03:00""#));
+        let changed = set_task_schedule(&added, "t", Some("daily 02:00")).unwrap();
+        assert!(changed.contains(r#"schedule "daily 02:00""#) && !changed.contains("weekly"));
+        assert_eq!(changed.matches("schedule").count(), 1);
+        let removed = set_task_schedule(&changed, "t", None).unwrap();
+        assert!(!removed.contains("schedule"));
+        // the rest of the task survives, and the result still parses as config
+        assert!(removed.contains(r#"directory "/d""#));
+        assert!(crate::BackupConfig::parse("t", &changed).is_ok());
+    }
+
+    #[test]
+    fn set_task_schedule_rejects_bad_input() {
+        let kdl = "default-task \"t\"\ntasks {\n    task \"t\" {\n    }\n}\n";
+        assert!(set_task_schedule(kdl, "t", Some("sometimes")).is_err());
+        assert!(set_task_schedule(kdl, "missing", Some("daily 02:00")).unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn edit_remote_keeps_limit_upload_and_recovery() {
+        let kdl = "default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n            repo \"/r\"\n            remote \"rustfs:http://h/b\" {\n                credentials \"old\"\n                limit-upload \"20MiB\"\n                recovery false\n            }\n        }\n    }\n}\n";
+        let out = edit_remote(
+            kdl,
+            "t",
+            "rustfs:http://h/b",
+            RemoteSpec { url: "rustfs:http://h/b".into(), credentials: "new".into(), mc_max_workers: Some(2), mc_limit_upload: None },
+        )
+        .unwrap();
+        assert!(out.contains(r#"limit-upload "20MiB""#) && out.contains("recovery false"), "{out}");
+        assert!(out.contains(r#"credentials "new""#));
+        assert!(crate::BackupConfig::parse("t", &out).is_ok());
+    }
+
+    #[test]
+    fn set_backup_password_profile_adds_changes_and_removes() {
+        let kdl = "default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n            repo \"/r\"\n            directory \"/d\"\n        }\n    }\n}\n";
+        let added = set_backup_password_profile(kdl, "t", Some("photos")).unwrap();
+        assert!(added.contains(r#"password-profile "photos""#));
+        let changed = set_backup_password_profile(&added, "t", Some("media")).unwrap();
+        assert!(changed.contains(r#"password-profile "media""#) && !changed.contains("photos"));
+        let removed = set_backup_password_profile(&changed, "t", None).unwrap();
+        assert!(!removed.contains("password-profile") && removed.contains(r#"directory "/d""#));
+        assert!(crate::BackupConfig::parse("t", &changed).is_ok());
+
+        let calls_only = "default-task \"t\"\ntasks {\n    task \"t\" {\n    }\n}\n";
+        assert!(set_backup_password_profile(calls_only, "t", Some("x")).unwrap_err().contains("no backup block"));
+        assert!(set_backup_password_profile(kdl, "nope", Some("x")).unwrap_err().contains("not found"));
     }
 }

@@ -185,7 +185,7 @@ mod tests {
     use super::*;
 
     fn remote(url: &str, recovery: bool) -> Remote {
-        Remote { url: url.into(), credentials: "c".into(), mc_max_workers: None, mc_limit_upload: None, recovery }
+        Remote { url: url.into(), credentials: "c".into(), mc_max_workers: None, mc_limit_upload: None, limit_upload: None, recovery }
     }
 
     /// A source whose hash is `hash` and whose bundle is an empty staging dir.

@@ -9,6 +9,17 @@ pub enum Step {
     Sync,
 }
 
+impl Step {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Step::Backup => "backup",
+            Step::Check => "check",
+            Step::Forget => "forget",
+            Step::Sync => "sync",
+        }
+    }
+}
+
 impl FromStr for Step {
     type Err = String;
 

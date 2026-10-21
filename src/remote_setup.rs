@@ -97,14 +97,24 @@ pub fn prompt_new_remote(secrets_path: &str) -> Result<Option<NewRemote>, String
 }
 
 /// Like [`test_remote_with_secrets`], decrypting the secrets file first.
+/// The `password-profile` of `task`'s backup, if it has one (and the config
+/// can be read). Remote tests need it: a task with its own repository password
+/// must be tested, and any new remote initialized, with that password.
+pub fn password_profile_of(config_path: &str, task: &str) -> Option<String> {
+    let config = crate::BackupConfig::from_file(config_path).ok()?;
+    config.tasks.iter().find(|t| t.name == task)?.password_profile().map(str::to_string)
+}
+
 pub fn test_remote(
     url: &str,
     profile: &str,
     secrets_path: &str,
+    password_profile: Option<&str>,
     interactive: bool,
 ) -> Result<String, String> {
     validate_url(url)?;
-    test_remote_with_secrets(url, profile, &load_secrets(secrets_path)?, interactive)
+    let secrets = load_secrets(secrets_path)?.for_profile(password_profile)?;
+    test_remote_with_secrets(url, profile, &secrets, interactive)
 }
 
 /// Tests a remote with its credentials profile. With `interactive`, offers to
@@ -216,9 +226,9 @@ fn test_s3(
 
 /// Runs the connection test after a remote was saved, printing the outcome.
 /// A failure is only a warning: the remote stays in the config.
-pub fn test_after_save(url: &str, profile: &str, secrets_path: &str) {
+pub fn test_after_save(url: &str, profile: &str, secrets_path: &str, password_profile: Option<&str>) {
     println!("\nTesting remote...");
-    match test_remote(url, profile, secrets_path, true) {
+    match test_remote(url, profile, secrets_path, password_profile, true) {
         Ok(msg) => println!("{msg}"),
         Err(e) => eprintln!(
             "warning: {e}\nThe remote was saved. Re-test any time with `vivo remote test`."
@@ -269,7 +279,7 @@ pub fn guided_add(
     std::fs::write(config_path, new_kdl).map_err(|e| e.to_string())?;
     println!("Added remote '{}' to task '{task}'.", remote.url);
 
-    test_after_save(&remote.url, &remote.credentials, secrets_path);
+    test_after_save(&remote.url, &remote.credentials, secrets_path, password_profile_of(config_path, &task).as_deref());
     Ok(Some(remote.url))
 }
 
@@ -295,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_remote_rejects_bad_url_before_touching_secrets() {
-        let err = test_remote("rustfs:https://host", "p", "/nonexistent/secrets.yaml", false)
+        let err = test_remote("rustfs:https://host", "p", "/nonexistent/secrets.yaml", None, false)
             .unwrap_err();
         assert!(err.contains("missing bucket"), "{err}");
     }

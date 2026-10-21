@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{env, process};
 
-use super::app::{App, Pane, TaskEntry, FIELD_NAMES};
+use super::app::{App, Pane, TaskEntry, FIELD_NAMES, FIELD_PASSWORD_PROFILE, FIELD_SCHEDULE};
 use super::credentials;
 use crate::config_editor::{self as editor, EditTaskSpec, RemoteSpec, TaskSpec};
 use crate::ensure_path;
@@ -154,8 +154,8 @@ fn add_task_prompt(app: &App) -> Result<String, String> {
 
 /// Tests a just-saved remote and returns a one-line status for the footer.
 /// Never fails the add/edit itself — the remote is already written.
-fn offer_remote_test(url: &str, profile: &str, secrets_path: &str) -> String {
-    match crate::remote_setup::test_remote(url, profile, secrets_path, true) {
+fn offer_remote_test(url: &str, profile: &str, secrets_path: &str, password_profile: Option<&str>) -> String {
+    match crate::remote_setup::test_remote(url, profile, secrets_path, password_profile, true) {
         Ok(msg) => msg,
         Err(e) => format!("Warning: {}", e.lines().next().unwrap_or("remote test failed")),
     }
@@ -233,7 +233,7 @@ fn add_remote_prompt(app: &App) -> Result<String, String> {
 
     editor::update_file(&app.config_path, |kdl| editor::add_remote(kdl, &task_name, spec))?;
 
-    let test_msg = offer_remote_test(&url, &credentials, &secrets_path);
+    let test_msg = offer_remote_test(&url, &credentials, &secrets_path, crate::remote_setup::password_profile_of(&app.config_path, &task_name).as_deref());
     Ok(format!("Added remote '{url}' to task '{task_name}'. {test_msg}"))
 }
 
@@ -250,7 +250,7 @@ fn edit_remote_prompt(app: &App) -> Result<String, String> {
         editor::edit_remote(kdl, &task_name, &remote.url, spec)
     })?;
 
-    let test_msg = offer_remote_test(&url, &credentials, &secrets_path);
+    let test_msg = offer_remote_test(&url, &credentials, &secrets_path, crate::remote_setup::password_profile_of(&app.config_path, &task_name).as_deref());
     Ok(format!("Updated remote. {test_msg}"))
 }
 
@@ -417,7 +417,10 @@ fn test_remote_prompt(app: &App) -> Result<String, String> {
     println!("Testing remote: {url}");
     println!("Credentials:    {profile}\n");
 
-    let result = crate::remote_setup::test_remote(&url, &profile, &secrets_path, true);
+    let password_profile = selected_task_name(app)
+        .ok()
+        .and_then(|task| crate::remote_setup::password_profile_of(&app.config_path, &task));
+    let result = crate::remote_setup::test_remote(&url, &profile, &secrets_path, password_profile.as_deref(), true);
     let summary = match &result {
         Ok(msg) => {
             println!("{msg}");
@@ -468,8 +471,41 @@ fn save_task_edit(app: &App, old_name: &str, spec: EditTaskSpec) -> Result<Strin
     Ok(format!("Updated task '{name}'."))
 }
 
+/// Edits the schedule row. Only the config changes: installing it is
+/// `vivo schedule apply`, and says so rather than touching the system from a TUI.
+fn edit_schedule_prompt(app: &App, task: &TaskEntry) -> Result<String, String> {
+    let current = task.schedule.as_deref().unwrap_or("");
+    let answer = ask!(text("Schedule (daily HH:MM or weekly <day> HH:MM; blank = none):", current));
+    let new = opt(answer);
+    editor::update_file(&app.config_path, |kdl| editor::set_task_schedule(kdl, &task.name, new.as_deref()))?;
+    Ok(match new {
+        Some(w) => format!("Schedule set to '{w}'. Run `vivo schedule apply` to install it."),
+        None => "Schedule removed. Run `vivo schedule apply` to uninstall it.".to_string(),
+    })
+}
+
+/// Edits the password-profile row. The profile only picks which secret to use;
+/// it must match what the repository was created with.
+fn edit_password_profile_prompt(app: &App, task: &TaskEntry) -> Result<String, String> {
+    if task.repo.is_none() {
+        return Err("set a repo path first".to_string());
+    }
+    let current = task.password_profile.as_deref().unwrap_or("");
+    let new = opt(ask!(text("Password profile (name under `passwords:` in secrets; blank = global):", current)));
+    editor::update_file(&app.config_path, |kdl| editor::set_backup_password_profile(kdl, &task.name, new.as_deref()))?;
+    Ok(match new {
+        Some(p) => format!("Password profile '{p}' set. Add `passwords: {p}:` with `vivo secrets edit`; it must match the repo's existing password."),
+        None => "Password profile removed; the global password is used.".to_string(),
+    })
+}
+
 fn edit_field_prompt(app: &App) -> Result<String, String> {
     let task = app.tasks.get(app.selected_task).ok_or("no task selected")?;
+    match app.selected_field {
+        FIELD_SCHEDULE => return edit_schedule_prompt(app, task),
+        FIELD_PASSWORD_PROFILE => return edit_password_profile_prompt(app, task),
+        _ => {}
+    }
     let mut spec = task_spec(task);
 
     if app.selected_field >= 3 && task.repo.is_none() {

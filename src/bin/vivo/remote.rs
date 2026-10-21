@@ -64,7 +64,7 @@ pub fn cmd_remote_add(config_path: &str, secrets_path: &str, matches: &clap::Arg
     println!("Added remote '{url}' to task '{task}'.");
 
     if interactive {
-        vivo::remote_setup::test_after_save(&url, &credentials, secrets_path);
+        vivo::remote_setup::test_after_save(&url, &credentials, secrets_path, vivo::remote_setup::password_profile_of(config_path, &task).as_deref());
     }
     Ok(())
 }
@@ -76,10 +76,17 @@ pub fn cmd_remote_test(config_path: &str, secrets_path: &str, matches: &clap::Ar
     let config = vivo::BackupConfig::from_file(config_path)?;
     let secrets = vivo::remote_setup::load_secrets(secrets_path)?;
 
-    let remotes = match matches.get_one::<String>("task") {
-        Some(t) => config.remotes_for_task(t),
-        None => config.all_remotes(),
-    };
+    // Each remote is tested with its task's repository password.
+    let wanted = matches.get_one::<String>("task");
+    let remotes: Vec<(&str, &str, Option<&str>)> = config
+        .tasks
+        .iter()
+        .filter(|t| wanted.map_or(true, |w| *w == t.name))
+        .flat_map(|t| {
+            let profile = t.password_profile();
+            t.backup_remotes().into_iter().map(move |(url, creds)| (url, creds, profile))
+        })
+        .collect();
     if remotes.is_empty() {
         println!("No remotes configured. Add one with `vivo remote add`.");
         return Ok(());
@@ -87,9 +94,17 @@ pub fn cmd_remote_test(config_path: &str, secrets_path: &str, matches: &clap::Ar
 
     let interactive = interactive();
     let mut failed = 0;
-    for (url, profile) in &remotes {
+    for (url, profile, password_profile) in &remotes {
         println!("{url}  (credentials: {profile})");
-        match vivo::remote_setup::test_remote_with_secrets(url, profile, &secrets, interactive) {
+        let task_secrets = match secrets.for_profile(*password_profile) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  failed: {e}\n");
+                failed += 1;
+                continue;
+            }
+        };
+        match vivo::remote_setup::test_remote_with_secrets(url, profile, &task_secrets, interactive) {
             Ok(msg) => println!("  ok: {msg}\n"),
             Err(e) => {
                 eprintln!("  failed: {e}\n");

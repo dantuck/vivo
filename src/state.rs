@@ -29,6 +29,10 @@ pub struct TaskState {
     /// Latest sync attempt per remote URL.
     #[serde(default)]
     pub remotes: BTreeMap<String, RemoteState>,
+    /// Unix seconds each `steps`-scheduled step (`check`, `forget`, `sync`)
+    /// last completed, keyed by step name.
+    #[serde(default)]
+    pub steps: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -38,6 +42,10 @@ pub struct RemoteState {
     /// Why that attempt failed; `None` means it succeeded.
     #[serde(default)]
     pub error: Option<String>,
+    /// The latest attempt was cut short when its sync window closed. `error`
+    /// says so; the sync resumes next run, so it is not a failure.
+    #[serde(default)]
+    pub interrupted: bool,
     /// Unix seconds of the last successful sync of this remote.
     #[serde(default)]
     pub last_ok: Option<i64>,
@@ -135,10 +143,14 @@ impl State {
             let r = entry.remotes.entry(sync.url.clone()).or_default();
             r.at = at;
             r.error = sync.error.clone();
+            r.interrupted = sync.interrupted;
             if sync.error.is_none() {
                 r.last_ok = Some(at);
             }
             r.recovery = RecoveryState::after(r.recovery.take(), sync.recovery.as_ref(), at);
+        }
+        for step in &outcome.steps_done {
+            entry.steps.insert(step.as_str().to_string(), at);
         }
         entry.last_run = at;
         entry.error = error.map(str::to_string).or_else(|| {
@@ -161,6 +173,18 @@ pub fn record_run(task: &str, dry_run: bool, outcome: &RunOutcome, error: Option
     }
 }
 
+/// "5 hours", "20 minutes" — a span of time, coarse on purpose.
+pub fn span(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (n, unit) = match secs {
+        0..=59 => (secs, "second"),
+        60..=3599 => (secs / 60, "minute"),
+        3600..=86399 => (secs / 3600, "hour"),
+        _ => (secs / 86400, "day"),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
 /// "3 hours ago", "2 days ago" — coarse on purpose.
 pub fn ago(secs: i64) -> String {
     let secs = secs.max(0);
@@ -181,11 +205,59 @@ mod tests {
     fn outcome(syncs: Vec<(&str, Option<&str>)>) -> RunOutcome {
         RunOutcome {
             dry_run: false,
+            steps_done: Vec::new(),
             syncs: syncs
                 .into_iter()
-                .map(|(url, e)| SyncResult { url: url.into(), error: e.map(str::to_string), recovery: None })
+                .map(|(url, e)| SyncResult { url: url.into(), error: e.map(str::to_string), interrupted: false, recovery: None })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_paused_sync_is_recorded_without_counting_as_good() {
+        let mut s = State::default();
+        s.apply("t", &outcome(vec![("b2:x", None)]), None, 100);
+
+        let mut paused = outcome(vec![("b2:x", Some("the sync window closed; b2:x was not synced"))]);
+        paused.syncs[0].interrupted = true;
+        s.apply("t", &paused, None, 200);
+        let r = &s.tasks["t"].remotes["b2:x"];
+        assert!(r.interrupted);
+        assert_eq!(r.at, 200);
+        assert_eq!(r.last_ok, Some(100), "an incomplete sync is not a good sync");
+        assert_eq!(s.tasks["t"].error, None, "and it does not fail the task");
+
+        // the next full sync clears it
+        s.apply("t", &outcome(vec![("b2:x", None)]), None, 300);
+        let r = &s.tasks["t"].remotes["b2:x"];
+        assert!(!r.interrupted && r.error.is_none());
+        assert_eq!(r.last_ok, Some(300));
+    }
+
+    #[test]
+    fn spans_are_coarse() {
+        assert_eq!(span(30), "30 seconds");
+        assert_eq!(span(60), "1 minute");
+        assert_eq!(span(5 * 3600 + 59), "5 hours");
+        assert_eq!(span(3 * 86400), "3 days");
+    }
+
+    #[test]
+    fn records_completed_steps() {
+        let mut s = State::default();
+        let mut o = outcome(vec![]);
+        o.steps_done = vec![crate::step::Step::Check, crate::step::Step::Sync];
+        s.apply("t", &o, None, 500);
+        assert_eq!(s.tasks["t"].steps["check"], 500);
+        assert_eq!(s.tasks["t"].steps["sync"], 500);
+        assert!(!s.tasks["t"].steps.contains_key("forget"));
+
+        // a later run that skips check leaves its timestamp alone
+        let mut o = outcome(vec![]);
+        o.steps_done = vec![crate::step::Step::Sync];
+        s.apply("t", &o, None, 900);
+        assert_eq!(s.tasks["t"].steps["check"], 500);
+        assert_eq!(s.tasks["t"].steps["sync"], 900);
     }
 
     #[test]
@@ -212,7 +284,8 @@ mod tests {
     fn recovery_outcomes_are_tracked_per_remote() {
         let sync = |recovery| RunOutcome {
             dry_run: false,
-            syncs: vec![SyncResult { url: "b2:x:p".into(), error: None, recovery }],
+            syncs: vec![SyncResult { url: "b2:x:p".into(), error: None, interrupted: false, recovery }],
+            ..RunOutcome::default()
         };
         let state = |s: &State| s.tasks["t"].remotes["b2:x:p"].recovery.clone();
         let mut s = State::default();

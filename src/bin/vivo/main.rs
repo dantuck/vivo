@@ -7,6 +7,7 @@ mod restore;
 mod schedule;
 mod secrets;
 mod snapshots;
+mod verify;
 mod status;
 mod task;
 mod util;
@@ -20,8 +21,9 @@ use init::cmd_init;
 use onboard::{ensure_onboarded, run_backup};
 use recover::cmd_recover;
 use restore::cmd_restore;
-use schedule::{cmd_schedule_add, cmd_schedule_remove, cmd_schedule_status};
+use schedule::{cmd_schedule_add, cmd_schedule_apply, cmd_schedule_remove, cmd_schedule_status};
 use snapshots::cmd_snapshots;
+use verify::cmd_verify;
 use status::cmd_status;
 use remote::{cmd_remote_add, cmd_remote_list, cmd_remote_remove, cmd_remote_test};
 use secrets::{
@@ -120,14 +122,22 @@ fn main() {
         Some(("schedule", sub)) => {
             match sub.subcommand() {
                 Some(("add", args)) => finish(cmd_schedule_add(&config_path, args)),
-                Some(("remove", _)) => finish(cmd_schedule_remove()),
-                Some(("status", _)) | None => finish(cmd_schedule_status()),
+                Some(("apply", args)) => finish(cmd_schedule_apply(&config_path, args)),
+                Some(("remove", args)) => finish(cmd_schedule_remove(&config_path, args)),
+                Some(("status", _)) | None => finish(cmd_schedule_status(&config_path)),
                 _ => unreachable!(),
             }
             return;
         }
         Some(("status", args)) => {
             finish(cmd_status(&config_path, &secrets_path, args));
+            return;
+        }
+        Some(("verify", args)) => {
+            if !ensure_onboarded(&config_path, &secrets_path) {
+                return;
+            }
+            finish(cmd_verify(&config_path, &secrets_path, args));
             return;
         }
         Some(("snapshots", args)) => {
@@ -146,8 +156,14 @@ fn main() {
             if !ensure_onboarded(&config_path, &secrets_path) {
                 return;
             }
-            let mount_path = sub.get_one::<String>("path").map(String::as_str);
-            if let Err(e) = vivo::mount::run(&config_path, &secrets_path, mount_path) {
+            let opts = vivo::mount::Options {
+                mount_path: sub.get_one::<String>("path").cloned(),
+                task: sub.get_one::<String>("task").cloned(),
+                from: sub.get_one::<String>("from").cloned(),
+                host: sub.get_one::<String>("host").cloned(),
+                paths: sub.get_many::<String>("snapshot-path").into_iter().flatten().cloned().collect(),
+            };
+            if let Err(e) = vivo::mount::run(&config_path, &secrets_path, &opts) {
                 eprintln!("error: {e}");
                 process::exit(1);
             }

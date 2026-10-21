@@ -118,8 +118,51 @@ pub fn run_preflight(
     !required_failed
 }
 
-pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> Result<(), String> {
+/// What `vivo mount` was asked to mount and where.
+#[derive(Debug, Default)]
+pub struct Options {
+    /// Mount point; default is a temp directory.
+    pub mount_path: Option<String>,
+    /// Task to mount without prompting.
+    pub task: Option<String>,
+    /// With `task`: `local` (default) or a remote URL.
+    pub from: Option<String>,
+    /// Only show snapshots taken on this host.
+    pub host: Option<String>,
+    /// Only show snapshots that include this path (restic's `--path`).
+    pub paths: Vec<String>,
+}
+
+/// Arguments for `restic mount`. `--no-lock` keeps a read-only mount from
+/// writing a lock file into the repository, which matters for remote copies
+/// that a later sync would delete it from, or that have read-only credentials.
+fn mount_args(mount_point: &str, opts: &Options) -> Vec<String> {
+    let mut args = vec!["mount".to_string(), "--no-lock".to_string()];
+    if let Some(host) = &opts.host {
+        args.extend(["--host".to_string(), host.clone()]);
+    }
+    for path in &opts.paths {
+        args.extend(["--path".to_string(), path.clone()]);
+    }
+    args.push(mount_point.to_string());
+    args
+}
+
+/// The repository to mount: named by `--task`/`--from`, or chosen from a menu.
+fn choose_target(config_path: &str, secrets_path: &str, opts: &Options) -> Result<crate::repos::RepoTarget, String> {
     let (config, secrets) = crate::repos::load(config_path, secrets_path)?;
+
+    if let Some(task) = &opts.task {
+        let tasks = crate::repos::backup_tasks(&config, Some(task))?;
+        if tasks.len() != 1 {
+            let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+            return Err(format!("'{task}' covers several backups ({}); name one with --task", names.join(", ")));
+        }
+        return crate::repos::find_source(&crate::repos::targets_for(tasks[0], &secrets), opts.from.as_deref());
+    }
+    if opts.from.is_some() {
+        return Err("--from needs --task to say which task's repository".to_string());
+    }
 
     let mut targets = Vec::new();
     for task in crate::repos::backup_tasks(&config, None)? {
@@ -128,28 +171,37 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     if targets.is_empty() {
         return Err("No backup tasks configured. Run `vivo task add` first.".to_string());
     }
-
     let labels: Vec<String> = targets.iter().map(|t| t.label()).collect();
     let selected = Select::new("Select repository to mount:", labels)
         .raw_prompt()
         .map_err(|_| "cancelled".to_string())?;
-    let target = &targets[selected.index];
+    Ok(targets.swap_remove(selected.index))
+}
+
+pub fn run(config_path: &str, secrets_path: &str, opts: &Options) -> Result<(), String> {
+    let target = choose_target(config_path, secrets_path, opts)?;
 
     let restic_url = &target.restic_url;
-    let check_path = mount_path.map(Path::new);
-    if !run_preflight(restic_url, &target.env, &secrets.restic_password, check_path) {
+    let check_path = opts.mount_path.as_deref().map(Path::new);
+    let restic_password = target.env.get("RESTIC_PASSWORD").map_or("", String::as_str);
+    if !run_preflight(restic_url, &target.env, restic_password, check_path) {
         return Err("pre-flight checks failed — fix the issues above and try again".to_string());
     }
 
-    let (mount_point, owned) = mount_point_path(mount_path, &target.task)?;
+    let (mount_point, owned) = mount_point_path(opts.mount_path.as_deref(), &target.task)?;
     let mount_point_str = mount_point.to_string_lossy().to_string();
 
-    println!("Mounting {restic_url} at {mount_point_str}");
+    println!("Mounting {} at {mount_point_str} (read-only)", target.label());
     println!();
     println!("  Browse your backups:");
     println!("    {mount_point_str}/snapshots/latest/  (most recent)");
-    println!("    {mount_point_str}/snapshots/         (all snapshots)");
+    println!("    {mount_point_str}/snapshots/         (all snapshots, by time)");
+    println!("    {mount_point_str}/ids/               (by snapshot ID)");
     println!("    {mount_point_str}/hosts/             (by hostname)");
+    if !target.is_local {
+        println!();
+        println!("  This is an off-site copy: every file you open is downloaded from it.");
+    }
     println!();
     println!("Press Ctrl+C to unmount.");
     println!("  (close any open files in the mount first to avoid 'device busy' errors)");
@@ -158,9 +210,9 @@ pub fn run(config_path: &str, secrets_path: &str, mount_path: Option<&str>) -> R
     // restic also receives the signal and handles FUSE unmounting itself.
     ctrlc::set_handler(|| {}).map_err(|e| format!("could not set Ctrl+C handler: {e}"))?;
 
-    let mut child = Command::new("restic")
-        .args(["mount", "--repo", restic_url, &mount_point_str])
-        .envs(&target.env)
+    let mut child = target
+        .restic()
+        .args(mount_args(&mount_point_str, opts))
         .spawn()
         .map_err(|e| format!("could not start restic: {e}"))?;
 
@@ -246,6 +298,8 @@ mod tests {
 
     #[test]
     fn check_repo_accessible_warns_for_nonexistent_repo() {
+        // Tests that put a fake `restic` on PATH would make this repo look reachable.
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let r = check_repo_accessible(
             "/tmp/__vivo_no_such_repo__",
             &HashMap::new(),
@@ -263,5 +317,20 @@ mod tests {
         let ok = run_preflight("/tmp/norepo", &HashMap::new(), "pw", None);
         std::env::set_var("PATH", &original);
         assert!(!ok, "preflight should fail when restic is not on PATH");
+    }
+
+    #[test]
+    fn mount_args_are_read_only_and_apply_filters() {
+        let plain = Options::default();
+        assert_eq!(mount_args("/mnt/x", &plain), ["mount", "--no-lock", "/mnt/x"]);
+        let filtered = Options {
+            host: Some("laptop".into()),
+            paths: vec!["/Users/me/Photos".into(), "/Users/me/Movies".into()],
+            ..Options::default()
+        };
+        assert_eq!(
+            mount_args("/mnt/x", &filtered),
+            ["mount", "--no-lock", "--host", "laptop", "--path", "/Users/me/Photos", "--path", "/Users/me/Movies", "/mnt/x"]
+        );
     }
 }

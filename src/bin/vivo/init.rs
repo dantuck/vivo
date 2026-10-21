@@ -94,6 +94,7 @@ pub fn first_backup_config(config_path: &str, dry_run: bool) -> VivoConfig {
         config_file: Some(std::path::PathBuf::from(config_path)),
         dry_run,
         start_step: Default::default(),
+        force: true,
     }
 }
 

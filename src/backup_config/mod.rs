@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod steps;
 pub(crate) mod kdl_decode;
 pub(crate) mod task;
 pub use kdl_decode::ConfigError;
@@ -206,6 +207,22 @@ impl BackupConfig {
         BackupConfig::parse(path, &content).map_err(|e| e.to_string())
     }
 
+    /// Errors if a backup names a `password-profile` that the secrets lack, or
+    /// whose password is empty or still the `change-me` placeholder.
+    pub fn check_password_profiles(&self, secrets: &Secrets) -> Result<(), String> {
+        for task in &self.tasks {
+            let Some(profile) = task.password_profile() else { continue };
+            match secrets.password_for(Some(profile)) {
+                None => return Err(format!("task '{}': {}", task.name, crate::config::missing_profile(profile))),
+                Some(p) if p.is_empty() || is_placeholder_password(p) => {
+                    return Err(format!("task '{}': password profile '{profile}' is not set — run `vivo secrets edit`", task.name))
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn all_remotes(&self) -> Vec<(&str, &str)> {
         self.tasks.iter().flat_map(|t| t.backup_remotes()).collect()
     }
@@ -255,6 +272,8 @@ impl BackupConfig {
 
         let document = BackupConfig::parse(&config_path, &config_content)
             .map_err(|e| LoadConfigError::Other(e.to_string()))?;
+
+        document.check_password_profiles(&secrets).map_err(LoadConfigError::Other)?;
 
         println!(
             "[{}] Loaded configuration from {}",
@@ -659,5 +678,52 @@ tasks { task "t" { backup { repo "/r"
         let yaml = "restic_password: s3cr3t\n";
         let creds = std::collections::HashMap::new();
         assert!(apply_profile_to_yaml(yaml, "x", &creds).is_err());
+    }
+
+    #[test]
+    fn task_schedule_is_parsed_and_validated() {
+        let src = |sched: &str| {
+            format!("default-task \"t\"\ntasks {{ task \"t\" {{ {sched}\nbackup {{ repo \"/r\"\ndirectory \"/d\" }} }} }}")
+        };
+        let cfg = BackupConfig::parse("t", &src("schedule \"weekly sun 03:00\"")).unwrap();
+        assert_eq!(cfg.tasks[0].schedule(), Some(crate::schedule::When::Weekly { day: 0, hour: 3, minute: 0 }));
+        let cfg = BackupConfig::parse("t", &src("")).unwrap();
+        assert_eq!(cfg.tasks[0].schedule(), None);
+        for bad in ["schedule \"weekly 03:00\"", "schedule 3", "schedule \"daily 02:00\"\nschedule \"daily 03:00\"", "schedule"] {
+            assert!(BackupConfig::parse("t", &src(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn secrets_resolve_password_profiles() {
+        let s = parse_secrets("restic_password: global\npasswords:\n  photos: pw-photos\n").unwrap();
+        assert_eq!(s.password_for(None), Some("global"));
+        assert_eq!(s.password_for(Some("photos")), Some("pw-photos"));
+        assert_eq!(s.password_for(Some("nope")), None);
+        assert_eq!(s.for_profile(Some("photos")).unwrap().restic_password, "pw-photos");
+        assert!(s.for_profile(Some("nope")).unwrap_err().contains("password profile 'nope'"));
+        // secrets files from before profiles existed still parse
+        assert!(parse_secrets("restic_password: g\n").unwrap().passwords.is_empty());
+    }
+
+    #[test]
+    fn password_profiles_must_exist_and_be_set() {
+        let cfg = BackupConfig::parse(
+            "t",
+            "default-task \"t\"\ntasks {\n task \"t\" { backup { repo \"/r\"\ndirectory \"/d\"\npassword-profile \"photos\" } }\n task \"u\" { backup { repo \"/r2\"\ndirectory \"/d\" } }\n}",
+        )
+        .unwrap();
+        assert_eq!(cfg.tasks[0].password_profile(), Some("photos"));
+        assert_eq!(cfg.tasks[1].password_profile(), None);
+
+        let ok = parse_secrets("restic_password: g\npasswords:\n  photos: pw\n").unwrap();
+        assert!(cfg.check_password_profiles(&ok).is_ok());
+
+        let missing = parse_secrets("restic_password: g\n").unwrap();
+        let err = cfg.check_password_profiles(&missing).unwrap_err();
+        assert!(err.contains("task 't'") && err.contains("'photos'"), "{err}");
+
+        let placeholder = parse_secrets("restic_password: g\npasswords:\n  photos: change-me\n").unwrap();
+        assert!(cfg.check_password_profiles(&placeholder).unwrap_err().contains("not set"));
     }
 }
