@@ -637,6 +637,15 @@ impl Backup {
         execute_command("restic", args)
     }
 
+    /// Removes restic's stale cache directories so it stops reporting them. The
+    /// cache only speeds up later runs, so a failure here is reported, never fatal.
+    fn clean_cache(&self) {
+        let args = ["cache", "--cleanup"].map(String::from).to_vec();
+        if let Err(e) = execute_command("restic", args) {
+            ui::info(&format!("Could not clean restic's cache: {e}"));
+        }
+    }
+
     /// Syncs every remote, continuing past failures. Unless this is a dry run,
     /// each successful sync is followed by bringing the remote's recovery copy
     /// up to date (see [`crate::recovery`]); a problem there is reported but
@@ -764,6 +773,9 @@ impl Backup {
         }
         if config.start_step <= Step::Forget && self.step_due(&Step::Forget, task_name, config, &state) {
             self.forget(dry_run)?;
+            if !dry_run {
+                self.clean_cache();
+            }
             outcome.steps_done.push(Step::Forget);
         }
         if config.start_step <= Step::Sync && self.step_due(&Step::Sync, task_name, config, &state) {
