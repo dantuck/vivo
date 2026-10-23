@@ -67,7 +67,7 @@ Not on a terminal (CI, piped input)? `init` writes a static starter config inste
 ```sh
 vivo remote add     # guided: backend, URL, credentials, then a connection test
 vivo remote test    # re-test every configured remote (or --task NAME)
-vivo doctor         # check tools, config, secrets, and remote connectivity
+vivo doctor         # check tools, config, secrets, folders, and remote connectivity
 vivo --dry-run      # preview the backup without changing anything
 vivo                # run the backup
 vivo schedule add   # run it every day
@@ -104,16 +104,16 @@ vivo schedule add              # the original: the default task, daily at 02:00 
 
 A schedule is `daily HH:MM` or `weekly <day> HH:MM` (`sun`, `mon`, ...). If you rename a task, run `vivo schedule apply`: it removes the old unit and installs the new one.
 
-On macOS, grant the `vivo` binary Full Disk Access (System Settings → Privacy & Security) if you back up Documents, Desktop or other protected folders; anything vivo can't read is skipped with a warning and the rest of the backup still completes. A Mac that is asleep at the scheduled time runs the backup when it wakes.
+On macOS, grant Full Disk Access (System Settings → Privacy & Security) to the app you run `vivo` from, and to the `vivo` binary itself for scheduled runs, if you back up Documents, Desktop, a Photos library or other protected folders. A Mac that is asleep at the scheduled time runs the backup when it wakes. See [A backup that captured nothing](#a-backup-that-captured-nothing) if a protected folder comes out empty.
 
 ## Backing up photos and other big media
 
-Photos and video are large and change rarely, so the right rhythm differs from documents: back up often locally, verify and push to remotes less often, and keep long transfers out of working hours. Give such a bucket its own task, repository and (optionally) password:
+Photos and video are large and change rarely, so the right rhythm differs from documents: back up often locally, verify and push to remotes less often, and keep long transfers out of working hours. In `vivo manage`, press `a` and choose **Photos & video** to get the setup below without writing it by hand. To write it yourself, give the bucket its own task, repository and (optionally) password:
 
 ```kdl
 task "photos" {
     schedule "daily 02:00"
-    before "! pgrep -x Photos"          // see the Photos library note below
+    before "! pgrep -x Photos" reason="Photos is open"   // see the Photos library note below
     backup {
         repo "$HOME/.restic/repo/photos"
         password-profile "photos"
@@ -142,25 +142,141 @@ task "photos" {
 
 Everything is encrypted before it leaves your machine, with or without a profile. The trade-offs worth knowing: a remote only ever holds opaque data, so nothing there can preview your photos (browse them with `vivo mount` or restore them); losing a password means losing that bucket, so store each one with your age key; and restoring a single photo from a remote downloads whole pack files, which costs time and, on some hosts, egress. Verify and browse the local repository routinely and save the remotes for disasters.
 
-### The macOS Photos library
+### Many folders
 
-`~/Pictures/Photos Library.photoslibrary` is a package, and its `database/` changes constantly, so a snapshot taken while Photos is open can be inconsistent. Either:
+You don't need to list every folder. Pick the one that holds them all:
 
-- **Back up the library with Photos closed.** Include `originals/` and `database/`, and refuse to run while Photos is open with a `before` guard (a failing `before` stops the whole task and shows up in `vivo status`):
+- **A parent folder plus `exclude`** is the best default. Point at `~/Pictures` and exclude what you don't want. New year or event folders are picked up automatically, and restic backs up identical files once.
+- **A few specific folders** work as `include` lines (or the **Also back up** row in `vivo manage`). It gets tedious past about five.
+- **Dozens of scattered folders**: keep their paths in a text file, one per line, and point `files-from` at it. The list lives outside the config, so a script can maintain it.
 
-  ```kdl
-  before "! pgrep -x Photos"
-  backup {
-      include "$HOME/Pictures/Photos Library.photoslibrary/originals"
-      include "$HOME/Pictures/Photos Library.photoslibrary/database"
-      exclude "**/resources/derivatives"   // thumbnails Photos rebuilds
-      ...
-  }
-  ```
+### The macOS Photos library: back up the library or an export
 
-- **Or back up exports.** A folder export (for example `osxphotos export`) is plain files, can be backed up at any time, and is the easiest to browse after a restore, at the cost of albums and edits unless you export them too.
+`~/Pictures/Photos Library.photoslibrary` is a package: a folder Photos manages, with a database that changes constantly. You can back it up in two ways, or both at once, and `vivo manage` asks which when you add a **Photos & video** task and it finds a library.
 
-Originals alone are always recoverable as ordinary files, but without `database/` you lose albums, edits and metadata. If "Download Originals to this Mac" is off, `originals/` is incomplete: only what is on this Mac is backed up.
+| | **The library as it is** | **An export** ([osxphotos](https://github.com/RhetTbull/osxphotos)) |
+|---|---|---|
+| What is backed up | the `.photoslibrary` bundle | a folder of plain files, kept current by `osxphotos export` before each backup |
+| Restores into Photos on a Mac, with albums and edits | yes | no (files and metadata sidecars only) |
+| Readable on any system, with real names | no: file names are UUIDs and albums live in the library's database | yes: `2026/10/IMG_1234.heic`, with an XMP sidecar per photo |
+| Photos must be closed | yes, or the copy can be inconsistent | not required by vivo; osxphotos reads the library itself |
+| Needs | nothing extra | osxphotos: `uv tool install osxphotos` (or `brew tap RhetTbull/osxphotos && brew install osxphotos`) |
+| Extra disk space on this Mac | none | little on APFS (see below) |
+
+Pick the library if you will only ever restore onto a Mac, the export if you want files you can open anywhere, including Linux, or **both**, which is what I would choose: the second copy costs little (below), and you get a restore that works on a Mac and one that works anywhere. Everything here needs Full Disk Access for the app running vivo, because macOS guards the library.
+
+#### Does an export double the disk space?
+
+Usually not, but it depends:
+
+- **On APFS (the default macOS filesystem) osxphotos clones files while exporting**, according to its documentation. A clone shares the original's disk blocks, so the export folder takes almost no extra space until a file changes. Finder still shows it at full size; check Disk Utility or `df` for what is really used.
+- **It does take real space** if the export is on a different drive, or if you add `--exiftool` or `--convert-to-jpeg`, which rewrite the files. `--export-as-hardlink` is the other way to avoid copies (same drive only, and not with `--exiftool`).
+- **In the backup repository and on remotes, identical content is stored once.** An export made from clones or hardlinks is byte-identical to the originals, so it adds very little to the repository even if you back up the library too.
+
+These are the documented behaviours; vivo does not measure them. Compare the sizes on your own library before relying on them.
+
+#### Setting it up
+
+In `vivo manage` (`a`, then **Photos & video**) choose **An export** and vivo writes the task for you. By hand it is a `before` step that runs the export, and the export folder as the thing to back up:
+
+```kdl
+task "photos" {
+    schedule "daily 02:00"
+    before "osxphotos export \"$HOME/Photos Export\" --library \"$HOME/Pictures/Photos Library.photoslibrary\" --update --directory \"{created.year}/{created.mm}\" --sidecar xmp" reason="Exporting your Photos library failed" fix="Run the export by hand to see why"
+    backup {
+        repo "$HOME/.restic/repo/photos"
+        directory "$HOME/Photos Export"
+        exclude "**/.DS_Store"
+        steps {
+            check  { every "weekly"; subset "5%" }
+            forget { every "weekly" }
+        }
+    }
+}
+```
+
+`--update` makes each run export only what is new or changed. If the export fails (osxphotos not installed, or macOS blocking the library), the backup does not run and vivo says why, with osxphotos' own output above it. Scheduled runs find `osxphotos` the same way they find `restic`, and on a Mac `vivo doctor` warns, with the install command, if a task uses it and it isn't installed (it doesn't check on other systems, where a restored Photos task isn't one you would run). The export step is not checked against a real osxphotos by vivo's tests, which use a stand-in program: if its options change, adjust the command.
+
+#### Doing both at once
+
+Choosing **Both** makes one task with one repository that backs up your folders (including the library) and the export folder. Because the export's files are the same content as the library's, the repository stores them once, so it grows very little. It writes two `before` steps:
+
+```kdl
+before "osxphotos export ... --update ..." reason="Exporting your Photos library failed" fix="..."
+before "! pgrep -x Photos" reason="Photos is open" fix="Quit Photos (Cmd+Q)" skip="**/*.photoslibrary"
+```
+
+The export runs first and never waits for Photos. The second check is a **soft** one (`skip=`): the library should only be copied while Photos is closed, but Photos being open should not cost you the export or your other folders. So with Photos open, vivo leaves just the library out of that run, says so, and backs up the rest:
+
+```
+[i] Part of 'photos' is being left out this time.
+
+    Blocked by       Photos is open
+    Left out         **/*.photoslibrary (this run only)
+    Still backed up  everything else in this task
+    To include it    Quit Photos (Cmd+Q), then run `vivo photos` again
+```
+
+The run succeeds, and `vivo status` shows "Photos is open, so **/*.photoslibrary was left out of this backup" until the next run that includes it. If Photos is left open every night, the export keeps backing up but the library never does, so quit it now and then.
+
+#### Backing up the library as it is
+
+Refuse to run while Photos is open with a `before` guard (a failing `before` stops the whole task and shows up in `vivo status`):
+
+```kdl
+before "! pgrep -x Photos" reason="Photos is open" fix="Quit Photos (Cmd+Q)"
+backup {
+    directory "$HOME/Pictures"
+    exclude "**/*.photoslibrary/resources/derivatives"   // thumbnails Photos rebuilds
+    ...
+}
+```
+
+When the guard holds a run back (Photos is open, perhaps at the scheduled hour), vivo explains instead of printing an error:
+
+```
+[i] Backup of 'photos' did not run.
+
+    Blocked by   Photos is open
+    Check        ! pgrep -x Photos (a `before` line in your config)
+    To continue  Quit Photos (Cmd+Q), then run `vivo photos` again
+```
+
+The run still exits with status 1 and `vivo status` shows it ("Photos is open, so nothing was backed up") until a backup succeeds, and `on-failure` hooks get that same line in `$VIVO_ERROR`. A guard that stops every night means Photos is being left open overnight. The same layout explains folders vivo can't read, both before a backup starts and when it ends up backing up nothing.
+
+If "Download Originals to this Mac" is off (iCloud Photos with optimised storage), `originals/` is incomplete: only what is on this Mac is backed up, by either method.
+
+### Restoring photos on another system, such as Linux
+
+The repository is an ordinary [restic](https://restic.net) repository, so any machine with restic and the repository password can restore it. Nothing here depends on macOS or on vivo. This section follows how restic and osxphotos are documented to behave; it has not been tried on Linux with a real Photos library, so do a test restore before you depend on it.
+
+**You need three things, and none of them can be on the Mac that failed:**
+
+1. **A copy of the repository elsewhere.** A repository that only exists in `~/.restic/repo/photos` is lost with the Mac. Add a remote (`vivo remote add`), or copy the repository somewhere safe.
+2. **The repository password**, and the profile's password if the task uses `password-profile`.
+3. **For `vivo recover` only, the age key** that decrypts your vivo secrets, and `sops` and `age` installed; see [Restoring on a new machine](#restoring-on-a-new-machine) for the steps.
+
+**Restoring, with vivo or with restic alone:**
+
+```sh
+# with vivo (Linux builds are published): rebuild the config from the remote, then restore.
+# With no local repository on this machine, vivo reads the off-site copy (--from picks one).
+vivo recover --from "b2:my-bucket:photos"
+vivo restore photos --target ~/photos-restored                                    # everything
+vivo restore photos --target ~/photos-restored --path "/Users/me/Photos Export"   # one folder
+
+# or restic alone, with the repository password in RESTIC_PASSWORD
+restic -r b2:my-bucket:photos restore latest --target ~/photos-restored
+restic -r b2:my-bucket:photos mount ~/mnt        # browse without restoring (needs FUSE)
+```
+
+Backups keep full paths, so files land under the original folder structure inside the target, for example `~/photos-restored/Users/me/Photos Export/2026/10/IMG_1234.heic`. Add `--path` (restic: `--include`) to restore only part of a snapshot.
+
+**What you get back**
+
+- **From an export:** your photos with real names in year/month folders and an XMP sidecar next to each, which photo managers such as digiKam read. This is the easy case.
+- **From the library as it is:** a `Photos Library.photoslibrary` folder. Your original files are in `originals/0` to `originals/F`, named by UUID, with their EXIF data (dates, GPS) intact, and any photo manager that reads HEIC and EXIF can import that folder. Albums, captions, keywords and people are in `database/Photos.sqlite`, which is not meant for other programs. I believe edited versions are kept separately under `resources/` (the backup excludes only the `derivatives` thumbnails), but have not confirmed it against a real library.
+- **osxphotos on Linux:** its project says the `export` and `query` commands work on Linux, so you may be able to run `osxphotos export <folder> --library "<restored bundle>"` there to get named files and sidecars from a restored library. Many of its features are macOS-only, and this is untested here. If you want a Linux-ready copy, make the export on the Mac while you can.
 
 ## Verifying and browsing backups
 
@@ -184,6 +300,15 @@ vivo status --max-age 24   # flag anything older than 24 hours (default 48)
 ```
 
 `status` reads the newest snapshot from each local repository and the result of the last sync to each remote, and exits non-zero when something is stale, failed, or has never run, so you can also call it from a monitor.
+
+### A backup that captured nothing
+
+restic treats files it can't read as a warning and still saves a snapshot, which is how a folder that macOS blocks (the Photos library is the usual one) used to produce an empty backup that looked fine. vivo now checks for this:
+
+- **Before a backup**, it tries to read each folder (and any Photos library inside it) and says plainly what it can't, with the fix. `vivo doctor` runs the same check for every task, and `vivo task add` and `vivo manage` run it when you create a task.
+- **After a backup**, it asks restic how many files the new snapshot holds. If restic couldn't read files **and** the snapshot is empty, the run fails (exit code 1, shown in `vivo status`) and names the likely cause. If some files were skipped, the run succeeds but the count is recorded as a warning that `vivo status` shows until the next run. A snapshot that is empty with no errors (an empty or fully excluded folder) is a warning too.
+
+The usual fix on macOS is Full Disk Access for the app running vivo (Terminal, iTerm, ...), then restarting it. Check it worked by running the backup again and looking in `vivo snapshots` and `vivo mount`.
 
 To be told when a scheduled run fails, add hooks to a task. They run with `VIVO_TASK`, `VIVO_STATUS` (`success`/`failure`) and `VIVO_ERROR` set, and are skipped on dry runs:
 
@@ -298,13 +423,21 @@ Opens a full-screen config manager with four navigable panes (Tab to cycle):
 | Pane | Keys |
 |---|---|
 | **Tasks** | `a` add · `d` delete · `e` edit all fields · `s` set as default · `o` open in `$EDITOR` |
-| **Fields** | `↑↓` select field · `Enter`/`e` edit field (including **Schedule** and **Password profile**) |
+| **Fields** | `↑↓` select field · `Enter`/`e` edit field (including the folder lists, **Schedule** and **Password profile**) |
 | **Remotes** | `a` add · `d` delete · `e` edit · `t` test connection |
 | **Calls** | `a` add · `d` delete · `Ctrl+↑↓` reorder |
 
-Settings without a row of their own (`include`, `exclude`, `before`, `steps`, and a remote's `limit-upload`) are listed read-only under **Also set**; press `o` to change them in your editor. Editing the **Schedule** row only changes the config: run `vivo schedule apply` to install it. The **Password profile** row picks which entry under `passwords:` in the secrets is used, and it must match what the repository was created with.
+The **Also back up** and **Exclude** rows open a list: pick an entry to remove it, or choose **+ Add a folder** (Tab completes folder names). Each change is saved at once, and Esc closes the list. `before`, `steps` and a remote's `limit-upload` have no row of their own; they are listed read-only under **Also set**, and `o` opens the file to change them. Editing the **Schedule** row only changes the config: run `vivo schedule apply` to install it. The **Password profile** row picks which entry under `passwords:` in the secrets is used, and it must match what the repository was created with.
 
-The default task (run when no task name is given) is marked with `*` in the Tasks pane. Leaving the repo path blank when adding a task creates a calls-only orchestrator task with no backup block.
+**Adding a task** (`a`, or `vivo task add`) starts from what you're backing up:
+
+- **Photos & video** asks for the folder with your photos (offering `~/Pictures`), then more folders until you leave one blank. It sets up what a photos backup wants: a weekly data check and prune, a nightly schedule (run `vivo schedule apply` to install it), and a `.DS_Store` exclude. If a Photos library is in the folders, or sits in `~/Pictures` and you say yes, it also adds the guard that stops the backup while Photos is open, and skips the library's thumbnails.
+- **Other folders** is the same folder questions with nothing preset.
+- **Group** makes a task with no backup of its own that only runs other tasks, for example one that backs up everything.
+
+Folder questions help you get the path right: Tab completes folder names, `~` and a dragged-in folder both work, and a folder that doesn't exist is confirmed first. vivo never creates the folder being backed up: a typo would otherwise leave you backing up an empty folder. Only the backup repository is created.
+
+The default task (run when no task name is given) is marked with `*` in the Tasks pane.
 
 ### Step control
 
@@ -389,7 +522,7 @@ tasks {
 | Field | Description |
 |---|---|
 | `schedule "..."` | Run this task automatically: `daily HH:MM` or `weekly <day> HH:MM` (see [Scheduling](#scheduling)) |
-| `before "..."` | Shell command run before the backup (repeatable, via `sh -c`); if one fails, nothing is backed up and `on-failure` runs. Skipped on dry runs |
+| `before "..." reason="..." fix="..." skip="..."` | Shell command run before the backup (repeatable, via `sh -c`); if one fails, nothing is backed up and `on-failure` runs. `reason` says what is in the way ("Photos is open") and `fix` what to do ("Quit Photos (Cmd+Q)"); both are shown when the run is held back, and the command's own output is hidden. A plain `! pgrep -x Name` check gets "Name is running" and "Quit Name" without them.  With `skip="<pattern>"` a failure does not stop the task: that pattern is left out of that run's backup and the rest backs up (a soft check). Skipped on dry runs |
 | `command "..."` | Shell command to run after backup (via `sh -c`) |
 | `calls "name"` | Run another named task; circular references are detected and skipped |
 | `on-success "..."` | Shell command run when the task finishes without errors (skipped on dry runs) |
