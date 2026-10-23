@@ -322,6 +322,19 @@ fn next_step(task_name: &str, denied: bool, otherwise: &str) -> String {
     }
 }
 
+/// The failure for a backup whose folders the operating system is blocking: it
+/// does not run at all. Backing up only what is left would produce a snapshot that
+/// looks fine while the part that matters (a Photos library, say) is missing.
+fn blocked_sources_error(task_name: &str, problems: &[Problem]) -> RunError {
+    let denied: Vec<&Problem> = problems.iter().filter(|p| p.is_denied()).collect();
+    let paths = denied.iter().map(|p| format!("'{}'", p.path())).collect::<Vec<_>>().join(", ");
+    let notice = Notice::new(format!("'{task_name}' did not run: vivo can't read part of it."))
+        .row("Blocked", describe_all(problems))
+        .row("Result", "Nothing was backed up this time, so a backup is never left looking complete while part of it is missing.")
+        .row("To continue", next_step(task_name, true, ""));
+    RunError::with_notice(format!("vivo is not allowed to read {paths}, so nothing was backed up"), notice)
+}
+
 /// What to tell the user about folders vivo can't read, before restic runs.
 fn problems_notice(task_name: &str, problems: &[Problem]) -> Notice {
     let next = next_step(
@@ -502,6 +515,11 @@ impl Backup {
         // Look before restic does, so the reason is stated plainly instead of
         // being one error line among thousands.
         let problems = crate::sources::check_folders(&self.source_folders());
+        // A folder the OS blocks stops the run, unless part of this run is already
+        // being left out on purpose (a soft check): then say so and carry on.
+        if problems.iter().any(Problem::is_denied) && leave_out.is_empty() {
+            return Err(blocked_sources_error(task_name, &problems));
+        }
         let mut warnings = crate::sources::report(&problems);
         if !problems.is_empty() {
             problems_notice(task_name, &problems).print();
@@ -1122,6 +1140,18 @@ mod tests {
     /// for its own repository only (PATH is process-wide), failing for any other.
     #[cfg(unix)]
     fn fake_backup(code: i32, stderr_text: &str, snapshots_json: &str, dry_run: bool, source: Option<&str>) -> Result<Vec<String>, RunError> {
+        fake_backup_leaving_out(code, stderr_text, snapshots_json, dry_run, source, &[])
+    }
+
+    #[cfg(unix)]
+    fn fake_backup_leaving_out(
+        code: i32,
+        stderr_text: &str,
+        snapshots_json: &str,
+        dry_run: bool,
+        source: Option<&str>,
+        leave_out: &[String],
+    ) -> Result<Vec<String>, RunError> {
         use std::os::unix::fs::PermissionsExt;
 
         let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1145,7 +1175,7 @@ mod tests {
 
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{original}", dir.path().display()));
-        let result = cfg.tasks[0].backup().unwrap().backup("t", dry_run, &[]);
+        let result = cfg.tasks[0].backup().unwrap().backup("t", dry_run, leave_out);
         std::env::set_var("PATH", original);
         result
     }
@@ -1244,6 +1274,58 @@ mod tests {
         let warnings = fake_backup(0, "", &summary(4), false, Some("/no/such/folder/for/vivo")).unwrap();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("does not exist"), "{warnings:?}");
+    }
+
+    /// A folder holding some readable files and a Photos library the OS blocks.
+    /// `None` when running as root, which ignores permissions.
+    #[cfg(unix)]
+    fn folder_with_blocked_library() -> Option<(tempfile::TempDir, String)> {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("id").arg("-u").output().map(|o| o.stdout == b"0\n").unwrap_or(false) {
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("2024")).unwrap();
+        std::fs::write(dir.path().join("2024/x.jpg"), "photo").unwrap();
+        let library = dir.path().join("Photos Library.photoslibrary");
+        std::fs::create_dir(&library).unwrap();
+        std::fs::set_permissions(&library, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let shown = dir.path().display().to_string();
+        Some((dir, shown))
+    }
+
+    #[cfg(unix)]
+    fn unblock(dir: &tempfile::TempDir) {
+        use std::os::unix::fs::PermissionsExt;
+        let library = dir.path().join("Photos Library.photoslibrary");
+        std::fs::set_permissions(library, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_library_stops_the_run_even_when_other_files_could_be_backed_up() {
+        let Some((dir, folder)) = folder_with_blocked_library() else { return };
+        // a fake restic that would happily save a file: reaching it would give Ok
+        let result = fake_backup(0, "", &summary(1), false, Some(&folder));
+        unblock(&dir);
+
+        let err = result.unwrap_err();
+        assert!(err.summary.contains("Photos Library.photoslibrary") && err.summary.ends_with("so nothing was backed up"), "{err}");
+        let shown = console(&err);
+        assert!(shown.contains("did not run: vivo can't read part of it."), "{shown}");
+        assert!(shown.contains("even when Photos is closed"), "closing Photos is not the fix: {shown}");
+        assert!(shown.contains(crate::sources::permission_hint()), "{shown}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_library_is_not_fatal_when_part_of_the_run_is_already_left_out() {
+        let Some((dir, folder)) = folder_with_blocked_library() else { return };
+        let left_out = ["**/*.photoslibrary".to_string()];
+        let result = fake_backup_leaving_out(0, "", &summary(1), false, Some(&folder), &left_out);
+        unblock(&dir);
+        let warnings = result.expect("the library is excluded this run, so the rest backs up");
+        assert!(warnings.iter().any(|w| w.contains("not allowed to read")), "still reported: {warnings:?}");
     }
 
     #[cfg(unix)]

@@ -19,6 +19,12 @@ pub enum Problem {
 }
 
 impl Problem {
+    pub fn path(&self) -> &str {
+        match self {
+            Problem::Missing(p) | Problem::Denied(p) => p,
+        }
+    }
+
     pub fn is_denied(&self) -> bool {
         matches!(self, Problem::Denied(_))
     }
@@ -27,6 +33,10 @@ impl Problem {
     pub fn describe(&self) -> String {
         match self {
             Problem::Missing(p) => format!("'{p}' does not exist, so there is nothing to back up there"),
+            // macOS guards a Photos library on its own: closing Photos does not lift it
+            Problem::Denied(p) if p.to_lowercase().ends_with(".photoslibrary") => {
+                format!("vivo is not allowed to read '{p}' (macOS blocks a Photos library even when Photos is closed)")
+            }
             Problem::Denied(p) => format!("vivo is not allowed to read '{p}'"),
         }
     }
@@ -200,5 +210,13 @@ mod tests {
     #[test]
     fn check_folders_covers_every_folder() {
         assert_eq!(check_folders(&["/no/such/a", "/no/such/b"]).len(), 2);
+    }
+
+    #[test]
+    fn a_blocked_photos_library_says_that_closing_photos_does_not_help() {
+        let library = Problem::Denied("$HOME/Pictures/Photos Library.photoslibrary".into()).describe();
+        assert!(library.contains("even when Photos is closed"), "{library}");
+        let plain = Problem::Denied("/data".into()).describe();
+        assert_eq!(plain, "vivo is not allowed to read '/data'");
     }
 }
