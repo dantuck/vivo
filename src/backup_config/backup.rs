@@ -637,8 +637,9 @@ impl Backup {
         execute_command("restic", args)
     }
 
-    /// Removes restic's stale cache directories so it stops reporting them. The
-    /// cache only speeds up later runs, so a failure here is reported, never fatal.
+    /// Removes restic's stale cache directories so it stops reporting them. Runs
+    /// every time, not on `forget`'s cadence. The cache only speeds up later
+    /// runs, so a failure here is reported, never fatal.
     fn clean_cache(&self) {
         let args = ["cache", "--cleanup"].map(String::from).to_vec();
         if let Err(e) = execute_command("restic", args) {
@@ -773,10 +774,10 @@ impl Backup {
         }
         if config.start_step <= Step::Forget && self.step_due(&Step::Forget, task_name, config, &state) {
             self.forget(dry_run)?;
-            if !dry_run {
-                self.clean_cache();
-            }
             outcome.steps_done.push(Step::Forget);
+        }
+        if !dry_run {
+            self.clean_cache();
         }
         if config.start_step <= Step::Sync && self.step_due(&Step::Sync, task_name, config, &state) {
             if let Some(deadline) = self.sync_deadline(config) {
