@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.18.0](https://github.com/dantuck/vivo/compare/v0.17.0...v0.18.0) (2026-10-23)
+
+
+### Features
+
+* add per-task schedules, step cadence and media backup options ([225628f](https://github.com/dantuck/vivo/commit/225628fa81d0ed19a7644e6e6fbf89ebe41ef59e))
+* add Photos backup options and explain blocked runs ([8068fb5](https://github.com/dantuck/vivo/commit/8068fb55af7f2003bd03237aed3bdbc4c40e9255))
+* **backup:** clean restic cache after forget ([e49237d](https://github.com/dantuck/vivo/commit/e49237d40fe16bdc8e8f983b1be30dceadd5c31e))
+
+
+### Bug Fixes
+
+* stop a backup when the OS blocks a folder it needs ([0bea9a2](https://github.com/dantuck/vivo/commit/0bea9a2b97ae41cc0b2b40fe94c11a18a57125ca))
+* **tui:** keep every field row visible on short terminals ([2052e19](https://github.com/dantuck/vivo/commit/2052e195e0dd8583a712949d7e9b2f56ac387374))
+
 ## [0.17.0](https://github.com/dantuck/vivo/compare/v0.16.2...v0.17.0) (2026-10-16)
 
 
