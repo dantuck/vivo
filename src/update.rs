@@ -110,6 +110,12 @@ pub fn apply_update(dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
     };
     let tag = format!("v{}", latest.version.trim_start_matches('v'));
 
+    // self_update only compares versions when no target tag is pinned, so do it here.
+    if !is_newer(&latest.version, env!("CARGO_PKG_VERSION")) {
+        println!("vivo v{} is already up to date.", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if dry_run {
         println!(
             "[dry-run] would update vivo v{} → v{}",
