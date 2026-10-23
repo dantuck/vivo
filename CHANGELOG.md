@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/dantuck/vivo/compare/v0.18.1...v0.18.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **update:** skip download when already on the latest version ([cb3c5c1](https://github.com/dantuck/vivo/commit/cb3c5c1e23cb26d1840f24b8d456e71068697801))
+
 ## [0.18.1](https://github.com/dantuck/vivo/compare/v0.18.0...v0.18.1) (2026-10-23)
 
 
