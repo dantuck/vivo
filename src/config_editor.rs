@@ -14,6 +14,30 @@ pub struct RemoteSpec {
     pub mc_limit_upload: Option<String>,
 }
 
+/// A default home for a new task's restic repository: next to the existing
+/// local ones (so a new task lands beside your other repositories), else under
+/// `$HOME/.local/share/restic`. Never the same path as an existing repository.
+pub fn suggest_repo_path(existing_repos: &[&str], task_name: &str) -> String {
+    let local: Vec<&str> =
+        existing_repos.iter().copied().filter(|r| crate::backup_config::backup::Backup::is_local_repo(r)).collect();
+    let parent = local
+        .iter()
+        .find_map(|r| std::path::Path::new(r).parent().map(|p| p.to_string_lossy().into_owned()))
+        .filter(|p| !p.is_empty() && p != "/")
+        .unwrap_or_else(|| "$HOME/.local/share/restic".to_string());
+
+    let leaf = crate::schedule::slug(task_name);
+    let trim = |p: &str| p.trim_end_matches('/').to_string();
+    let taken = |candidate: &str| local.iter().any(|r| trim(r) == candidate);
+    let mut candidate = format!("{}/{leaf}", trim(&parent));
+    let mut n = 2;
+    while taken(&candidate) {
+        candidate = format!("{}/{leaf}-{n}", trim(&parent));
+        n += 1;
+    }
+    candidate
+}
+
 fn parse(kdl: &str) -> Result<KdlDocument, String> {
     kdl.parse().map_err(|e| format!("KDL parse error: {e}"))
 }
@@ -474,6 +498,99 @@ pub fn set_task_schedule(kdl: &str, task_name: &str, when: Option<&str>) -> Resu
     let mut doc = parse(kdl)?;
     let task = find_task(&mut doc, task_name)?;
     upsert_or_remove_child(task.ensure_children(), "schedule", when);
+    Ok(doc.to_string())
+}
+
+/// `value` as a quoted KDL string.
+pub(crate) fn quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Appends nodes written as KDL text to `children`, every line indented like the
+/// nodes already there, so the file reads as if it had been written by hand. The
+/// snippet keeps its own style (quotes, one-line blocks).
+fn push_snippet(children: &mut KdlDocument, snippet: &str, default_indent: usize) -> Result<(), String> {
+    let invalid = |e: kdl::KdlError| format!("invalid KDL snippet: {e}");
+    let indent = children
+        .nodes()
+        .last()
+        .and_then(|n| n.format())
+        .map(|f| f.leading.rsplit('\n').next().unwrap_or("").to_string())
+        .unwrap_or_else(|| " ".repeat(default_indent));
+
+    // Checked as written first, so a mistake is reported against the snippet itself.
+    snippet.parse::<KdlDocument>().map_err(invalid)?;
+    let indented: String =
+        snippet.lines().filter(|l| !l.trim().is_empty()).map(|l| format!("{indent}{l}\n")).collect();
+    let nodes: KdlDocument = indented.parse().map_err(invalid)?;
+    children.nodes_mut().extend(nodes.nodes().iter().cloned());
+    Ok(())
+}
+
+/// Adds `name "value"` to a task's backup block, for the repeatable `include` and
+/// `exclude` nodes. A value that is already listed is left as it is.
+pub fn add_backup_node(kdl: &str, task_name: &str, name: &str, value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Err(format!("{name} cannot be empty"));
+    }
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    let children = find_backup(task, task_name)?.ensure_children();
+    let present = children.nodes().iter().any(|n| n.name().value() == name && first_arg(n) == Some(value));
+    if !present {
+        push_snippet(children, &format!("{name} {}", quote(value)), 12)?;
+    }
+    Ok(doc.to_string())
+}
+
+/// Removes the `name "value"` node (`include` / `exclude`) from a task's backup block.
+pub fn remove_backup_node(kdl: &str, task_name: &str, name: &str, value: &str) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    let children = find_backup(task, task_name)?.ensure_children();
+    let before = children.nodes().len();
+    children.nodes_mut().retain(|n| !(n.name().value() == name && first_arg(n) == Some(value)));
+    if children.nodes().len() == before {
+        return Err(format!("task '{task_name}' has no {name} '{value}'"));
+    }
+    Ok(doc.to_string())
+}
+
+/// Sets a backup's `directory`, or removes it with `None`.
+pub fn set_backup_directory(kdl: &str, task_name: &str, directory: Option<&str>) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    upsert_or_remove_child(find_backup(task, task_name)?.ensure_children(), "directory", directory);
+    Ok(doc.to_string())
+}
+
+/// Appends nodes written as KDL text (e.g. a `steps { ... }` block) to a task's
+/// backup block. For starting points that set several things at once.
+pub fn add_backup_snippet(kdl: &str, task_name: &str, snippet: &str) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    push_snippet(find_backup(task, task_name)?.ensure_children(), snippet, 12)?;
+    Ok(doc.to_string())
+}
+
+/// Adds a whole task written as KDL text (`task "name" { ... }`, unindented) to
+/// the `tasks` block, indented like the tasks already there. Errors if a task
+/// of that name exists.
+pub fn add_task_text(kdl: &str, name: &str, text: &str) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let tasks = doc.get_mut("tasks").ok_or("config missing 'tasks' block")?.ensure_children();
+    if tasks.nodes().iter().any(|n| n.name().value() == "task" && first_arg(n) == Some(name)) {
+        return Err(format!("task '{name}' already exists"));
+    }
+    push_snippet(tasks, text, 4)?;
+    Ok(doc.to_string())
+}
+
+/// Like [`add_backup_snippet`], but appends to the task itself (for `before`, `schedule`, ...).
+pub fn add_task_snippet(kdl: &str, task_name: &str, snippet: &str) -> Result<String, String> {
+    let mut doc = parse(kdl)?;
+    let task = find_task(&mut doc, task_name)?;
+    push_snippet(task.ensure_children(), snippet, 8)?;
     Ok(doc.to_string())
 }
 
@@ -1389,5 +1506,79 @@ tasks {
         let calls_only = "default-task \"t\"\ntasks {\n    task \"t\" {\n    }\n}\n";
         assert!(set_backup_password_profile(calls_only, "t", Some("x")).unwrap_err().contains("no backup block"));
         assert!(set_backup_password_profile(kdl, "nope", Some("x")).unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn suggested_repo_goes_beside_the_existing_ones() {
+        let existing = ["/Users/me/.restic/repo/sync", "b2:bucket:path", "/Users/me/.restic/repo/filecabinet"];
+        assert_eq!(suggest_repo_path(&existing, "photos"), "/Users/me/.restic/repo/photos");
+        assert_eq!(suggest_repo_path(&["$HOME/.restic/repo/sync"], "My Photos"), "$HOME/.restic/repo/my-photos");
+    }
+
+    #[test]
+    fn suggested_repo_falls_back_to_the_default_location() {
+        assert_eq!(suggest_repo_path(&[], "photos"), "$HOME/.local/share/restic/photos");
+        // remote-only or root-level repos don't set a convention
+        assert_eq!(suggest_repo_path(&["s3:http://h/b", "b2:x:y"], "photos"), "$HOME/.local/share/restic/photos");
+        assert_eq!(suggest_repo_path(&["/main"], "photos"), "$HOME/.local/share/restic/photos");
+    }
+
+    #[test]
+    fn suggested_repo_never_reuses_an_existing_repository() {
+        let existing = ["/r/photos", "/r/photos-2/"];
+        assert_eq!(suggest_repo_path(&existing, "photos"), "/r/photos-3");
+        assert_eq!(suggest_repo_path(&["/r/photos/"], "Photos"), "/r/photos-2");
+    }
+
+    const PHOTOS: &str = "default-task \"t\"\ntasks {\n    task \"t\" {\n        backup {\n            repo \"/r\"\n            directory \"$HOME/Pictures\"\n        }\n    }\n}\n";
+
+    fn parsed(kdl: &str) -> crate::BackupConfig {
+        crate::BackupConfig::parse("t", kdl).unwrap()
+    }
+
+    #[test]
+    fn add_and_remove_backup_nodes() {
+        let with = add_backup_node(PHOTOS, "t", "include", "$HOME/Movies").unwrap();
+        let with = add_backup_node(&with, "t", "include", "$HOME/Raw").unwrap();
+        let with = add_backup_node(&with, "t", "exclude", "**/*.tmp").unwrap();
+        // adding the same one again changes nothing
+        assert_eq!(add_backup_node(&with, "t", "include", "$HOME/Movies").unwrap(), with);
+
+        let cfg = parsed(&with);
+        let backup = cfg.tasks[0].backup().unwrap();
+        assert_eq!(backup.include(), ["$HOME/Movies", "$HOME/Raw"]);
+        assert_eq!(backup.exclude(), ["**/*.tmp"]);
+        assert_eq!(backup.directory(), Some("$HOME/Pictures"), "the rest of the backup is untouched");
+
+        let without = remove_backup_node(&with, "t", "include", "$HOME/Movies").unwrap();
+        assert_eq!(parsed(&without).tasks[0].backup().unwrap().include(), ["$HOME/Raw"]);
+        assert!(remove_backup_node(&without, "t", "include", "$HOME/Movies").unwrap_err().contains("no include"));
+        // a value is only removed from the node type it was added under
+        assert!(remove_backup_node(&without, "t", "exclude", "$HOME/Raw").is_err());
+
+        assert!(add_backup_node(PHOTOS, "t", "include", "  ").is_err());
+        assert!(add_backup_node(PHOTOS, "nope", "include", "/x").unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn set_backup_directory_changes_and_removes() {
+        let moved = set_backup_directory(PHOTOS, "t", Some("$HOME/Movies")).unwrap();
+        assert_eq!(parsed(&moved).tasks[0].backup().unwrap().directory(), Some("$HOME/Movies"));
+        let gone = set_backup_directory(&moved, "t", None).unwrap();
+        assert_eq!(parsed(&gone).tasks[0].backup().unwrap().directory(), None);
+    }
+
+    #[test]
+    fn add_backup_snippet_appends_whole_blocks() {
+        let out = add_backup_snippet(PHOTOS, "t", "steps {\n    check { every \"weekly\"; subset \"5%\" }\n}\nexclude \"**/*.tmp\"").unwrap();
+        let cfg = parsed(&out);
+        let backup = cfg.tasks[0].backup().unwrap();
+        assert_eq!(backup.steps().summary().as_deref(), Some("check weekly (5%)"));
+        assert_eq!(backup.exclude(), ["**/*.tmp"]);
+        assert!(add_backup_snippet(PHOTOS, "t", "steps {").unwrap_err().contains("invalid KDL snippet"));
+
+        // it reads as if written by hand: indented like its neighbours, closing braces intact
+        let expected = "            directory \"$HOME/Pictures\"\n            steps {\n                check { every \"weekly\"; subset \"5%\" }\n            }\n            exclude \"**/*.tmp\"\n        }\n";
+        assert!(out.contains(expected), "{out}");
     }
 }

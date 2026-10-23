@@ -19,6 +19,11 @@ impl Report {
         println!("  {} {:<28} {detail}", OK.green(), label);
     }
 
+    /// Worth reading but not a failure, so it doesn't count as a problem.
+    fn note(&self, label: &str, detail: &str) {
+        println!("  {} {:<28} {}", WARN.yellow().bold(), label, detail.yellow());
+    }
+
     fn bad(&mut self, label: &str, detail: &str) {
         self.problems += 1;
         println!("  {} {:<28} {}", WARN.red().bold(), label, detail.red());
@@ -89,6 +94,9 @@ fn check_task(report: &mut Report, (task_name, targets): Checked, state: &State,
     }
     if let Some((t, e)) = recorded.and_then(|t| t.error.as_ref().map(|e| (t, e))) {
         report.bad("last run", &format!("{} — {e}", ago(now() - t.last_run)));
+    }
+    for warning in recorded.map(|t| t.warnings.as_slice()).unwrap_or_default() {
+        report.note("last run warning", warning);
     }
 }
 

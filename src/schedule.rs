@@ -20,7 +20,7 @@ use std::{env, fs};
 use serde::{Deserialize, Serialize};
 
 pub const LABEL: &str = "dev.vivo.backup";
-const TOOLS: &[&str] = &["restic", "sops", "age-keygen", "mc", "aws", "rclone", "b2"];
+const TOOLS: &[&str] = &["restic", "sops", "age-keygen", "mc", "aws", "rclone", "b2", "osxphotos"];
 const DEFAULT_PATH_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

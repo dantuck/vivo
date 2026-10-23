@@ -1,10 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{env, process};
 
-use super::app::{App, Pane, TaskEntry, FIELD_NAMES, FIELD_PASSWORD_PROFILE, FIELD_SCHEDULE};
+use super::app::{
+    App, Pane, TaskEntry, FIELD_EXCLUDE, FIELD_INCLUDE, FIELD_NAMES, FIELD_PASSWORD_PROFILE, FIELD_SCHEDULE,
+};
 use super::credentials;
 use crate::config_editor::{self as editor, EditTaskSpec, RemoteSpec, TaskSpec};
 use crate::ensure_path;
+use crate::{folders, templates};
 
 /// Unwraps an inquire result inside a prompt function. A cancelled prompt
 /// (Esc / Ctrl-C) returns `$cancelled` (default: an `Ok("Cancelled.")` status);
@@ -128,28 +131,294 @@ fn handle_add(app: &mut App) {
     );
 }
 
+const START_PHOTOS: &str = "Photos & video (big files: checked weekly, runs nightly)";
+const START_FOLDERS: &str = "Other folders (a plain backup you tune yourself)";
+const START_GROUP: &str = "Group (only runs other tasks, e.g. back up everything)";
+
+/// Asks where the task's backup repository goes, suggesting a spot beside the
+/// existing ones. `Ok(None)` if cancelled.
+fn ask_repo(app: &App, name: &str) -> Result<Option<String>, String> {
+    let existing: Vec<&str> = app.tasks.iter().filter_map(|t| t.repo.as_deref()).collect();
+    let suggestion = editor::suggest_repo_path(&existing, name);
+    Ok(Some(ask!(
+        inquire::Text::new("Where should its backup repository be stored?")
+            .with_default(&suggestion)
+            .with_help_message("A local copy of the backups, created for you; remotes are off-site copies of it")
+            .prompt(),
+        Ok(None)
+    )))
+}
+
+const HOW_BOTH: &str = "Both: the library and an export (little extra space; recommended)";
+const HOW_LIBRARY: &str = "The library as it is (restores into Photos on a Mac)";
+const HOW_EXPORT: &str = "An export only: plain files with real names (readable on any system)";
+
+/// The plan for a Photos & video task. When a Photos library is found: both the
+/// library and an export of it, either alone, or (with no library) just folders.
+/// `Ok(None)` if cancelled.
+fn ask_photos_plan() -> Result<Option<templates::Plan>, String> {
+    let Some(library) = templates::default_photos_library() else {
+        return Ok(ask_photo_folders()?.map(templates::photos_plan));
+    };
+    let how = ask!(
+        inquire::Select::new("How should your Photos library be backed up?", vec![HOW_BOTH, HOW_LIBRARY, HOW_EXPORT])
+            .with_help_message("\u{2191}\u{2193} to move, Enter to select. The README compares them")
+            .prompt(),
+        Ok(None)
+    );
+
+    match how {
+        HOW_EXPORT => ask_export_plan(&library),
+        HOW_BOTH => {
+            let Some(folders) = ask_photo_folders()? else { return Ok(None) };
+            let Some(dest) = ask_export_dir()? else { return Ok(None) };
+            Ok(Some(templates::photos_both_plan(&library, &dest, folders)))
+        }
+        _ => Ok(ask_photo_folders()?.map(templates::photos_plan)),
+    }
+}
+
+/// Where the export goes, after saying what it needs. `Ok(None)` if cancelled.
+fn ask_export_dir() -> Result<Option<String>, String> {
+    if !templates::tool_on_path("osxphotos") {
+        println!("\nosxphotos isn't installed here yet. Install it with: {}", templates::OSXPHOTOS_INSTALL);
+        println!("The backup says so if it is missing.\n");
+    }
+    Ok(Some(ask!(
+        folders::ask_new_folder(
+            "Where should the export go?",
+            "osxphotos fills it and keeps it current. On APFS its files are clones, so it takes little extra disk space",
+            templates::EXPORT_DEFAULT_DIR,
+        ),
+        Ok(None)
+    )))
+}
+
+/// The plan for backing up an export of `library` alone. `Ok(None)` if cancelled.
+fn ask_export_plan(library: &str) -> Result<Option<templates::Plan>, String> {
+    let Some(dest) = ask_export_dir()? else { return Ok(None) };
+    let others = ask!(folders::ask_folders("Any other folder to back up too? (blank for none)", None), Ok(None));
+    Ok(Some(templates::photos_export_plan(library, &dest, others)))
+}
+
+/// The folders for a Photos & video task: the Pictures folder to start with, and
+/// the Photos library too when it isn't already inside a chosen folder.
+/// `Ok(None)` if cancelled.
+fn ask_photo_folders() -> Result<Option<Vec<String>>, String> {
+    let pictures = "$HOME/Pictures";
+    let default = folders::folder_exists(pictures).then_some(pictures);
+    let mut chosen = ask!(
+        folders::ask_folders("Which folder holds your photos and videos?", default),
+        Ok(None)
+    );
+
+    if let Some(library) = templates::default_photos_library() {
+        if !chosen.iter().any(|f| templates::is_within(&library, f)) {
+            let add = ask!(
+                inquire::Confirm::new("Also back up your Photos library?")
+                    .with_default(true)
+                    .with_help_message(&format!("{library}: Photos must be closed while it runs, and vivo checks"))
+                    .prompt(),
+                Ok(None)
+            );
+            if add {
+                chosen.push(library);
+            }
+        }
+    }
+    Ok(Some(chosen))
+}
+
+/// Says, on the plain terminal the prompts run on, which of `folders` vivo can't
+/// read, and waits: the status line is gone in two seconds, and a backup that
+/// can't read its folders is empty. Prints nothing if they are all fine.
+fn show_source_problems(folders: &[String]) {
+    let lines = crate::sources::report(&crate::sources::check_folders(folders));
+    if lines.is_empty() {
+        return;
+    }
+    println!("\nHeads up: this backup won't capture everything yet.");
+    for line in &lines {
+        println!("  - {line}");
+    }
+    println!("\nPress Enter to continue...");
+    std::io::stdin().read_line(&mut String::new()).ok();
+}
+
+/// What a new task was set up with, for the status line.
+fn describe_new_task(name: &str, plan: &templates::Plan) -> String {
+    let mut parts = vec![match (&plan.output_dir, plan.folders.len()) {
+        (Some(dir), n) if n > 1 => format!("{n} folders, including an export of your Photos library ({dir})"),
+        (Some(dir), _) => format!("exports your Photos library to {dir}"),
+        (None, 0) => "no folders yet (press o to add some)".to_string(),
+        (None, 1) => "1 folder".to_string(),
+        (None, n) => format!("{n} folders"),
+    }];
+    if let Some(schedule) = &plan.schedule {
+        parts.push(format!("scheduled {schedule}: run `vivo schedule apply` to install it"));
+    }
+    if plan.soft_photos_guard() {
+        parts.push("with Photos open, the library is left out of that run and the rest still backs up".to_string());
+    } else if plan.guards_photos() {
+        parts.push("Photos library found: it won't be backed up while Photos is open".to_string());
+    }
+    format!("Added task '{name}': {}.", parts.join("; "))
+}
+
 fn add_task_prompt(app: &App) -> Result<String, String> {
     let name = ask!(inquire::Text::new("Task name:").prompt());
-    let repo = opt(ask!(inquire::Text::new("Restic repo path (blank for calls-only task):")
-        .with_help_message("Leave blank to create a task that only calls other tasks")
-        .prompt()));
-    let directory = match repo {
-        Some(_) => opt(ask!(inquire::Text::new("Directory to back up (blank to skip):")
-            .with_help_message("Leave blank to skip")
-            .prompt())),
-        None => None,
-    };
-
-    editor::update_file(&app.config_path, |kdl| {
-        editor::add_task(
-            kdl,
-            TaskSpec { name: name.clone(), repo: repo.clone(), directory: directory.clone(), exclude_file: None },
-        )
-    })?;
-    for path in repo.iter().chain(&directory) {
-        ensure_path(path);
+    if name.trim().is_empty() {
+        return Err("task name cannot be empty".to_string());
     }
-    Ok(format!("Added task '{name}'."))
+
+    // The default help ("type to filter") invites typing a description, which
+    // filters every option away, so it is replaced.
+    let start = ask!(inquire::Select::new("Start from:", vec![START_PHOTOS, START_FOLDERS, START_GROUP])
+        .with_help_message("\u{2191}\u{2193} to move, Enter to select")
+        .prompt());
+
+    if start == START_GROUP {
+        editor::update_file(&app.config_path, |kdl| {
+            editor::add_task(kdl, TaskSpec { name: name.clone(), repo: None, directory: None, exclude_file: None })
+        })?;
+        return Ok(format!("Added task '{name}'."));
+    }
+
+    let plan = if start == START_PHOTOS {
+        let Some(plan) = ask_photos_plan()? else { return Ok("Cancelled.".to_string()) };
+        plan
+    } else {
+        templates::custom_plan(ask!(folders::ask_folders("Which folder should it back up?", None)))
+    };
+    let Some(repo) = ask_repo(app, &name)? else { return Ok("Cancelled.".to_string()) };
+
+    editor::update_file(&app.config_path, |kdl| templates::apply_plan(kdl, &name, &repo, &plan))?;
+    // The repository, and a folder an export fills, are ours to create. A folder
+    // being backed up that doesn't exist is a mistake to report, not to fix.
+    ensure_path(&repo);
+    if let Some(dir) = &plan.output_dir {
+        ensure_path(dir);
+    }
+    show_source_problems(&plan.folders);
+    Ok(describe_new_task(&name, &plan))
+}
+
+/// Which list of a backup the list editor works on.
+#[derive(Clone, Copy)]
+enum ListKind {
+    /// Folders beyond `directory`: the `include` nodes.
+    Include,
+    /// Patterns left out: the `exclude` nodes.
+    Exclude,
+}
+
+impl ListKind {
+    fn node(self) -> &'static str {
+        match self {
+            ListKind::Include => "include",
+            ListKind::Exclude => "exclude",
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            ListKind::Include => "folder",
+            ListKind::Exclude => "pattern",
+        }
+    }
+
+    fn items(self, backup: &crate::backup_config::backup::Backup) -> Vec<String> {
+        match self {
+            ListKind::Include => backup.include().to_vec(),
+            ListKind::Exclude => backup.exclude().to_vec(),
+        }
+    }
+}
+
+fn is_cancel(e: &inquire::InquireError) -> bool {
+    matches!(e, inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted)
+}
+
+/// The current items of a task's list, read from the file (the list changes as
+/// the user edits it, so the screen's copy would be stale).
+fn read_list(config_path: &str, task_name: &str, kind: ListKind) -> Result<Vec<String>, String> {
+    let config = crate::BackupConfig::from_file(config_path)?;
+    let backup = config
+        .tasks
+        .iter()
+        .find(|t| t.name == task_name)
+        .and_then(|t| t.backup())
+        .ok_or_else(|| format!("task '{task_name}' has no backup"))?;
+    Ok(kind.items(backup))
+}
+
+/// Edits the folders ("Also back up") or exclude patterns of a task: pick an
+/// entry to remove it, or add one. Every change is saved at once; Esc is done.
+fn edit_list_prompt(app: &App, task: &TaskEntry, kind: ListKind) -> Result<String, String> {
+    if task.repo.is_none() {
+        return Err("set a repo path first".to_string());
+    }
+    let (add_label, done_label) = (format!("+ Add a {}", kind.noun()), "Done".to_string());
+    let mut changed = false;
+
+    loop {
+        let items = read_list(&app.config_path, &task.name, kind)?;
+        let mut options = items.clone();
+        options.extend([add_label.clone(), done_label.clone()]);
+
+        let message = match items.len() {
+            0 => format!("No {}s yet.", kind.noun()),
+            n => format!("{n} {}{}. Pick one to remove it.", kind.noun(), if n == 1 { "" } else { "s" }),
+        };
+        let picked = match inquire::Select::new(&message, options)
+            .with_help_message("\u{2191}\u{2193} to move, Enter to select, Esc when done")
+            .with_page_size(10)
+            .prompt()
+        {
+            Ok(picked) => picked,
+            Err(e) if is_cancel(&e) => break,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        if picked == done_label {
+            break;
+        }
+        if picked == add_label {
+            let added = match kind {
+                ListKind::Include => folders::ask_folder(
+                    "Folder to back up:",
+                    "Tab completes. Its parent is often better than listing every subfolder",
+                    None,
+                ),
+                ListKind::Exclude => inquire::Text::new("Pattern to exclude:")
+                    .with_help_message("e.g. **/*.tmp, **/Thumbnails, or a path")
+                    .prompt()
+                    .map(|p| opt(p.trim().to_string())),
+            };
+            match added {
+                Ok(Some(value)) => {
+                    editor::update_file(&app.config_path, |kdl| editor::add_backup_node(kdl, &task.name, kind.node(), &value))?;
+                    changed = true;
+                }
+                Ok(None) => {}
+                Err(e) if is_cancel(&e) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            continue;
+        }
+
+        match inquire::Confirm::new(&format!("Remove '{picked}'?")).with_default(false).prompt() {
+            Ok(true) => {
+                editor::update_file(&app.config_path, |kdl| editor::remove_backup_node(kdl, &task.name, kind.node(), &picked))?;
+                changed = true;
+            }
+            Ok(false) => {}
+            Err(e) if is_cancel(&e) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+
+    Ok(if changed { format!("Updated the {}s.", kind.noun()) } else { "No changes.".to_string() })
 }
 
 /// Tests a just-saved remote and returns a one-line status for the footer.
@@ -502,6 +771,8 @@ fn edit_password_profile_prompt(app: &App, task: &TaskEntry) -> Result<String, S
 fn edit_field_prompt(app: &App) -> Result<String, String> {
     let task = app.tasks.get(app.selected_task).ok_or("no task selected")?;
     match app.selected_field {
+        FIELD_INCLUDE => return edit_list_prompt(app, task, ListKind::Include),
+        FIELD_EXCLUDE => return edit_list_prompt(app, task, ListKind::Exclude),
         FIELD_SCHEDULE => return edit_schedule_prompt(app, task),
         FIELD_PASSWORD_PROFILE => return edit_password_profile_prompt(app, task),
         _ => {}

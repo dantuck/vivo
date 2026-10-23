@@ -40,6 +40,8 @@ const FIELD_LABELS: [&str; FIELD_COUNT] = [
     "Directory         ",
     "Exclude file      ",
     "Files from        ",
+    "Also back up      ",
+    "Exclude           ",
     "Schedule          ",
     "Password profile  ",
 ];
@@ -151,6 +153,7 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
     let label_style = MUTED;
     let highlight = selection(in_fields);
 
+    let (include, exclude) = (task.include_summary(), task.exclude_summary());
     let values: [Option<&str>; FIELD_COUNT] = [
         Some(task.name.as_str()),
         task.description.as_deref(),
@@ -158,6 +161,8 @@ fn draw_task_fields(f: &mut Frame, app: &App, area: Rect) {
         task.directory.as_deref(),
         task.exclude_file.as_deref(),
         task.files_from.as_deref(),
+        include.as_deref(),
+        exclude.as_deref(),
         task.schedule.as_deref(),
         task.password_profile.as_deref(),
     ];
@@ -302,6 +307,7 @@ tasks {
             password-profile "photos"
             include "/a"
             include "/b"
+            exclude "**/*.tmp"
             steps { sync { every "daily"; window "01:00-06:00" } }
             remote "rustfs:https://h/p" { credentials "rustfs"
 limit-upload "20MiB" }
@@ -335,7 +341,8 @@ directory "/d" } }
             "weekly sun 03:30",
             "photos",
             "Also set (press o to edit the file):",
-            "Include  /a (+1 more paths)",
+            "Also back up      /a (+1 more)",
+            "Exclude           **/*.tmp",
             "Before   ! pgrep -x Photos",
             "Steps    sync daily 01:00-06:00",
             "(limit 20MiB/s)",
