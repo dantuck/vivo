@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/dantuck/vivo/compare/v0.18.0...v0.18.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **backup:** run cache cleanup on every run ([10a6c44](https://github.com/dantuck/vivo/commit/10a6c443529f8428887fe5bb00256fb967000e31))
+
 ## [0.18.0](https://github.com/dantuck/vivo/compare/v0.17.0...v0.18.0) (2026-10-23)
 
 
