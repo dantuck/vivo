@@ -585,6 +585,82 @@ pub fn check_fuse() -> CheckResult {
     }
 }
 
+/// One result per task that backs up folders: can vivo read all of them? A
+/// folder that is missing or blocked would make a backup empty, or fail.
+pub fn check_task_sources(config: &BackupConfig) -> Vec<CheckResult> {
+    config
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let folders = task.backup()?.source_folders();
+            if folders.is_empty() {
+                return None;
+            }
+            let label = format!("sources of '{}'", task.name);
+            let lines = crate::sources::report(&crate::sources::check_folders(&folders));
+            Some(if lines.is_empty() {
+                CheckResult { label, status: CheckStatus::Ok, detail: None }
+            } else {
+                CheckResult { label, status: CheckStatus::Warn, detail: Some(lines.join(" ")) }
+            })
+        })
+        .collect()
+}
+
+/// Programs a task's `before` steps may call, with how to install each. Only a
+/// task that calls one needs it, so a missing one is a warning, not a failure.
+const BEFORE_TOOLS: &[(&str, &str)] = &[("osxphotos", crate::templates::OSXPHOTOS_INSTALL)];
+
+/// The programs worth checking on this system. osxphotos exports an Apple
+/// Photos library, which only exists on a Mac: elsewhere (a config restored on
+/// Linux, say) the task that calls it is not one that runs there, so there is
+/// nothing to warn about.
+fn before_tools_here() -> &'static [(&'static str, &'static str)] {
+    if cfg!(target_os = "macos") {
+        BEFORE_TOOLS
+    } else {
+        &[]
+    }
+}
+
+/// Whether a shell command runs `tool`: as a word of its own, or by path
+/// (`/opt/bin/osxphotos`), however it is joined to other commands.
+fn command_uses(command: &str, tool: &str) -> bool {
+    let by_path = format!("/{tool}");
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '"' | '\''))
+        .any(|word| word == tool || word.ends_with(&by_path))
+}
+
+/// One result per tool in `tools` that some task's `before` steps call: is it
+/// installed? `probe(tool, install hint)` does the looking.
+pub fn check_task_tools(
+    config: &BackupConfig,
+    tools: &[(&str, &str)],
+    probe: impl Fn(&str, &str) -> CheckResult,
+) -> Vec<CheckResult> {
+    tools
+        .iter()
+        .filter_map(|(tool, hint)| {
+            let tasks: Vec<String> = config
+                .tasks
+                .iter()
+                .filter(|t| t.before_commands().iter().any(|c| command_uses(c, tool)))
+                .map(|t| format!("'{}'", t.name))
+                .collect();
+            if tasks.is_empty() {
+                return None;
+            }
+            let mut result = probe(tool, &format!("install with: {hint}"));
+            result.label = format!("{} (used by {})", result.label, tasks.join(", "));
+            if matches!(result.status, CheckStatus::Fail) {
+                result.status = CheckStatus::Warn;
+            }
+            Some(result)
+        })
+        .collect()
+}
+
 pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
     let mut results: Vec<CheckResult> = Vec::new();
     let mut required_failures = 0u32;
@@ -632,6 +708,21 @@ pub fn run_doctor(config_path: &str, secrets_path: &str, fix: bool) -> i32 {
     let maybe_backup_config: Option<BackupConfig> = fs::read_to_string(config_path)
         .ok()
         .and_then(|content| BackupConfig::parse(config_path, &content).ok());
+
+    if let Some(ref backup_config) = maybe_backup_config {
+        for r in check_task_sources(backup_config) {
+            if matches!(r.status, CheckStatus::Warn) {
+                warnings += 1;
+            }
+            results.push(r);
+        }
+        for r in check_task_tools(backup_config, before_tools_here(), |tool, hint| check_tool_present(tool, "--version", hint)) {
+            if matches!(r.status, CheckStatus::Warn) {
+                warnings += 1;
+            }
+            results.push(r);
+        }
+    }
 
     if let Some(ref backup_config) = maybe_backup_config {
         let needs_s3_tool = backup_config
@@ -833,4 +924,77 @@ tasks {{
         let _ = detect_mc_install_method();
     }
 
+
+    #[test]
+    fn task_sources_are_ok_when_readable_and_warn_when_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().display().to_string();
+        let kdl = format!(
+            "default-task \"a\"\ntasks {{\n task \"a\" {{ backup {{ repo \"/r/a\"\ndirectory \"{ok}\" }} }}\n task \"b\" {{ backup {{ repo \"/r/b\"\ndirectory \"{ok}\"\ninclude \"/no/such/place\" }} }}\n task \"c\" {{ calls \"a\" }}\n}}"
+        );
+        let config = BackupConfig::parse("t", &kdl).unwrap();
+        let results = check_task_sources(&config);
+
+        assert_eq!(results.len(), 2, "a calls-only task has no sources to check");
+        assert_eq!(results[0].label, "sources of 'a'");
+        assert!(matches!(results[0].status, CheckStatus::Ok) && results[0].detail.is_none());
+        assert_eq!(results[1].label, "sources of 'b'");
+        assert!(matches!(results[1].status, CheckStatus::Warn));
+        assert!(results[1].detail.as_deref().unwrap().contains("/no/such/place"));
+    }
+
+    #[test]
+    fn command_uses_finds_a_tool_however_it_is_called() {
+        for yes in [
+            "osxphotos export /x --update",
+            "  osxphotos",
+            "cd /tmp && osxphotos export /x",
+            "/Users/me/.local/bin/osxphotos export /x",
+            "true; osxphotos query",
+            "(osxphotos export /x)",
+        ] {
+            assert!(command_uses(yes, "osxphotos"), "{yes}");
+        }
+        for no in ["! pgrep -x Photos", "echo osxphotos-notes", "myosxphotos export", "test -f /osxphotos.txt", ""] {
+            assert!(!command_uses(no, "osxphotos"), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_tool_is_checked_only_for_the_tasks_that_call_it() {
+        let kdl = "default-task \"a\"\ntasks {\n\
+            task \"photos\" { before \"osxphotos export /x\" }\n\
+            task \"more\" { before \"! pgrep -x Photos\"\nbefore \"cd /x && osxphotos export /y\" }\n\
+            task \"docs\" { before \"test -f /ready\" }\n}";
+        let config = BackupConfig::parse("t", kdl).unwrap();
+
+        let missing = |tool: &str, hint: &str| CheckResult {
+            label: tool.to_string(),
+            status: CheckStatus::Fail,
+            detail: Some(hint.to_string()),
+        };
+        let results = check_task_tools(&config, BEFORE_TOOLS, missing);
+        assert_eq!(results.len(), 1, "one result for the tool, not one per task");
+        assert_eq!(results[0].label, "osxphotos (used by 'photos', 'more')");
+        assert!(matches!(results[0].status, CheckStatus::Warn), "only some tasks need it, so it is a warning");
+        assert!(results[0].detail.as_deref().unwrap().contains("uv tool install osxphotos"));
+
+        let present = |tool: &str, _: &str| CheckResult { label: format!("{tool} (0.99)"), status: CheckStatus::Ok, detail: None };
+        let results = check_task_tools(&config, BEFORE_TOOLS, present);
+        assert_eq!(results[0].label, "osxphotos (0.99) (used by 'photos', 'more')");
+        assert!(matches!(results[0].status, CheckStatus::Ok));
+
+        // nothing calls it: nothing to check
+        let plain = BackupConfig::parse("t", "default-task \"a\"\ntasks { task \"a\" { before \"test -f /x\" } }").unwrap();
+        assert!(check_task_tools(&plain, BEFORE_TOOLS, missing).is_empty());
+
+        // no tools to check on this system (anywhere but a Mac): nothing is reported
+        assert!(check_task_tools(&config, &[], missing).is_empty());
+    }
+
+    #[test]
+    fn osxphotos_is_only_checked_on_a_mac() {
+        assert_eq!(!before_tools_here().is_empty(), cfg!(target_os = "macos"));
+        assert!(before_tools_here().iter().all(|(tool, _)| BEFORE_TOOLS.iter().any(|(t, _)| t == tool)));
+    }
 }

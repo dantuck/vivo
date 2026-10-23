@@ -27,12 +27,16 @@ pub const FIELD_NAMES: &[&str] =
     &["Name", "Description", "Repo", "Directory", "Exclude file", "Files from"];
 
 /// Rows after those, edited on their own: they are not part of `EditTaskSpec`.
-pub const EXTRA_FIELD_NAMES: &[&str] = &["Schedule", "Password profile"];
+pub const EXTRA_FIELD_NAMES: &[&str] = &["Also back up", "Exclude", "Schedule", "Password profile"];
 
+/// Index of the "Also back up" row: the folders beyond `directory` (`include`).
+pub const FIELD_INCLUDE: usize = FIELD_NAMES.len();
+/// Index of the "Exclude" row: patterns left out of the backup.
+pub const FIELD_EXCLUDE: usize = FIELD_NAMES.len() + 1;
 /// Index of the "Schedule" row.
-pub const FIELD_SCHEDULE: usize = FIELD_NAMES.len();
+pub const FIELD_SCHEDULE: usize = FIELD_NAMES.len() + 2;
 /// Index of the "Password profile" row.
-pub const FIELD_PASSWORD_PROFILE: usize = FIELD_NAMES.len() + 1;
+pub const FIELD_PASSWORD_PROFILE: usize = FIELD_NAMES.len() + 3;
 
 /// Number of rows in the Fields pane.
 pub const FIELD_COUNT: usize = FIELD_NAMES.len() + EXTRA_FIELD_NAMES.len();
@@ -56,20 +60,30 @@ pub struct TaskEntry {
     pub calls: Vec<String>,
 }
 
+/// `a`, or `a (+2 more)`; `None` for an empty list.
+fn summarize(items: &[String]) -> Option<String> {
+    let first = items.first()?;
+    Some(match items.len() {
+        1 => first.clone(),
+        n => format!("{first} (+{} more)", n - 1),
+    })
+}
+
 impl TaskEntry {
-    /// One line per extra setting this task has, for the read-only summary.
+    /// The "Also back up" row: the extra folders.
+    pub fn include_summary(&self) -> Option<String> {
+        summarize(&self.include)
+    }
+
+    /// The "Exclude" row: the exclude patterns.
+    pub fn exclude_summary(&self) -> Option<String> {
+        summarize(&self.exclude)
+    }
+
+    /// One line per read-only setting this task has: what has no row to edit it.
     pub fn detail_lines(&self) -> Vec<String> {
-        let list = |label: &str, items: &[String], unit: &str| -> Option<String> {
-            let first = items.first()?;
-            Some(match items.len() {
-                1 => format!("{label}{first}"),
-                n => format!("{label}{first} (+{} more {unit})", n - 1),
-            })
-        };
         [
-            list("Include  ", &self.include, "paths"),
-            list("Exclude  ", &self.exclude, "patterns"),
-            list("Before   ", &self.before, "commands"),
+            summarize(&self.before).map(|b| format!("Before   {b}")),
             self.steps.as_ref().map(|s| format!("Steps    {s}")),
         ]
         .into_iter()
@@ -119,7 +133,7 @@ impl App {
                     password_profile: t.password_profile().map(str::to_owned),
                     include: backup.map(|b| b.include().to_vec()).unwrap_or_default(),
                     exclude: backup.map(|b| b.exclude().to_vec()).unwrap_or_default(),
-                    before: t.before_commands().to_vec(),
+                    before: t.before_commands().into_iter().map(str::to_owned).collect(),
                     steps: backup.and_then(|b| b.steps().summary()),
                     remotes: t
                         .remotes()
@@ -300,16 +314,21 @@ directory "/d" }
     #[test]
     fn detail_lines_summarize_what_has_no_row() {
         let app = app();
+        // include and exclude have rows of their own; only what can't be edited here is listed
         assert_eq!(
             app.tasks[0].detail_lines(),
-            [
-                "Include  /a (+2 more paths)",
-                "Exclude  **/*.tmp",
-                "Before   ! pgrep -x Photos (+1 more commands)",
-                "Steps    check weekly (5%) \u{b7} sync daily 01:00-06:00",
-            ]
+            ["Before   ! pgrep -x Photos (+1 more)", "Steps    check weekly (5%) \u{b7} sync daily 01:00-06:00"]
         );
         assert!(app.tasks[1].detail_lines().is_empty(), "nothing extra, so no summary block");
+    }
+
+    #[test]
+    fn list_rows_summarize_their_items() {
+        let app = app();
+        assert_eq!(app.tasks[0].include_summary().as_deref(), Some("/a (+2 more)"));
+        assert_eq!(app.tasks[0].exclude_summary().as_deref(), Some("**/*.tmp"));
+        assert_eq!(app.tasks[1].include_summary(), None);
+        assert_eq!(app.tasks[1].exclude_summary(), None);
     }
 
     #[test]
@@ -321,7 +340,8 @@ directory "/d" }
         }
         assert_eq!(app.selected_field, FIELD_COUNT - 1);
         assert_eq!(app.selected_field, FIELD_PASSWORD_PROFILE);
-        assert_eq!(FIELD_SCHEDULE + 1, FIELD_PASSWORD_PROFILE);
-        assert_eq!(FIELD_COUNT, 8);
+        assert_eq!([FIELD_INCLUDE, FIELD_EXCLUDE, FIELD_SCHEDULE], [6, 7, 8]);
+        assert_eq!(FIELD_PASSWORD_PROFILE, 9);
+        assert_eq!(FIELD_COUNT, 10);
     }
 }

@@ -11,7 +11,11 @@ pub mod tui;
 pub mod remote_setup;
 pub mod state;
 pub mod repos;
+pub mod folders;
+pub mod notice;
 pub mod schedule;
+pub mod sources;
+pub mod templates;
 pub mod recovery;
 
 pub use crate::config::{build_cli, config_path_from, secrets_path_from, xdg_config_home, Secrets, VivoConfig};

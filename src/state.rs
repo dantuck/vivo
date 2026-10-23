@@ -26,6 +26,10 @@ pub struct TaskState {
     /// Why the last run was not clean; `None` means it finished with no errors.
     #[serde(default)]
     pub error: Option<String>,
+    /// What the last run got through but the user should know: files that could
+    /// not be read, a snapshot with nothing in it. Replaced on every real run.
+    #[serde(default)]
+    pub warnings: Vec<String>,
     /// Latest sync attempt per remote URL.
     #[serde(default)]
     pub remotes: BTreeMap<String, RemoteState>,
@@ -153,6 +157,7 @@ impl State {
             entry.steps.insert(step.as_str().to_string(), at);
         }
         entry.last_run = at;
+        entry.warnings = outcome.warnings.clone();
         entry.error = error.map(str::to_string).or_else(|| {
             let failed = outcome.failed_syncs();
             (failed > 0).then(|| format!("{failed} remote sync(s) failed"))
@@ -206,6 +211,7 @@ mod tests {
         RunOutcome {
             dry_run: false,
             steps_done: Vec::new(),
+            warnings: Vec::new(),
             syncs: syncs
                 .into_iter()
                 .map(|(url, e)| SyncResult { url: url.into(), error: e.map(str::to_string), interrupted: false, recovery: None })
@@ -325,5 +331,21 @@ mod tests {
         assert_eq!(ago(60), "1 minute ago");
         assert_eq!(ago(7200), "2 hours ago");
         assert_eq!(ago(86400 * 3), "3 days ago");
+    }
+
+    #[test]
+    fn warnings_are_kept_until_the_next_run_replaces_them() {
+        let mut s = State::default();
+        let mut o = outcome(vec![]);
+        o.warnings = vec!["2 file(s) could not be read".to_string()];
+        s.apply("t", &o, None, 100);
+        assert_eq!(s.tasks["t"].warnings, ["2 file(s) could not be read"]);
+        assert_eq!(s.tasks["t"].error, None, "a warning is not a failure");
+
+        // a later clean run clears them; a state file from before this field still loads
+        s.apply("t", &outcome(vec![]), None, 200);
+        assert!(s.tasks["t"].warnings.is_empty());
+        let old: State = serde_json::from_str(r#"{"tasks":{"t":{"last_run":1}}}"#).unwrap();
+        assert!(old.tasks["t"].warnings.is_empty());
     }
 }

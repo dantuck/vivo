@@ -13,6 +13,8 @@ use kdl::KdlNode;
 use crate::backup_config::kdl_decode::{named, ConfigError, Source};
 use crate::backup_config::steps::Steps;
 use crate::config::{Secrets, VivoConfig};
+use crate::notice::{Notice, RunError};
+use crate::sources::Problem;
 use crate::step::Step;
 use crate::ui;
 
@@ -304,6 +306,79 @@ pub struct SyncResult {
     pub recovery: Option<crate::recovery::Outcome>,
 }
 
+/// Each problem on its own line, for a notice row.
+fn describe_all(problems: &[Problem]) -> String {
+    problems.iter().map(Problem::describe).collect::<Vec<_>>().join("\n")
+}
+
+/// What to do next for folders vivo can't read: the permission fix when that is
+/// the cause, else `otherwise`; then run the task again.
+fn next_step(task_name: &str, denied: bool, otherwise: &str) -> String {
+    let rerun = format!("run `vivo {task_name}` again");
+    if denied {
+        format!("{} Then {rerun}.", crate::sources::permission_hint())
+    } else {
+        format!("{otherwise}, then {rerun}.")
+    }
+}
+
+/// What to tell the user about folders vivo can't read, before restic runs.
+fn problems_notice(task_name: &str, problems: &[Problem]) -> Notice {
+    let next = next_step(
+        task_name,
+        problems.iter().any(Problem::is_denied),
+        "Fix the folder in your config, or connect the drive",
+    );
+    Notice::new(format!("Some folders for '{task_name}' can't be read."))
+        .row("Blocked", describe_all(problems))
+        .row("Effect", "This backup carries on without them.")
+        .row("To continue", next)
+}
+
+/// The failure for a run where restic could not read anything and saved an empty
+/// snapshot. restic's exit 3 means unreadable files, which in practice is the
+/// operating system refusing access, so the fix offered is the permission one.
+fn empty_snapshot_error(task_name: &str, folders: &str, problems: &[Problem], first: Option<String>) -> RunError {
+    let blocked = if problems.is_empty() {
+        format!("restic could not read any file in {folders}{}", first.map(|f| format!(" (first: {f})")).unwrap_or_default())
+    } else {
+        describe_all(problems)
+    };
+    let notice = Notice::new(format!("'{task_name}' backed up nothing."))
+        .row("Blocked by", blocked)
+        .row("Result", "The snapshot restic saved is empty, so there is nothing to restore from it yet.")
+        .row("To continue", next_step(task_name, true, ""));
+    RunError::with_notice(format!("nothing was backed up: restic could not read any file in {folders}"), notice)
+}
+
+/// A restic `error:` line as `path (reason)`: restic words them like
+/// `error: openfile for readdirnames failed: open /a/b: permission denied`.
+/// Anything that doesn't look like that is returned without its `error:` prefix.
+fn brief_error(line: &str) -> String {
+    let text = line.trim_start_matches("error:").trim();
+    if let Some((left, reason)) = text.rsplit_once(": ") {
+        if let Some(slash) = left.find('/') {
+            return format!("{} ({reason})", &left[slash..]);
+        }
+    }
+    text.to_string()
+}
+
+/// Part of a backup left out of one run because a soft `before` check failed
+/// (`before "..." skip="<pattern>"`): the pattern to exclude this time, and the
+/// sentence for `vivo status`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeftOut {
+    pub pattern: String,
+    pub warning: String,
+}
+
+/// `total_files_processed` of the newest snapshot in `restic snapshots --json` output.
+fn parse_snapshot_files(json: &[u8]) -> Option<u64> {
+    let snapshots: Vec<serde_json::Value> = serde_json::from_slice(json).ok()?;
+    snapshots.last()?.get("summary")?.get("total_files_processed")?.as_u64()
+}
+
 /// What a [`Backup::run`] actually did.
 #[derive(Debug, Default)]
 pub struct RunOutcome {
@@ -311,6 +386,9 @@ pub struct RunOutcome {
     pub syncs: Vec<SyncResult>,
     /// Steps that ran and succeeded, for `steps` cadence bookkeeping.
     pub steps_done: Vec<Step>,
+    /// Things the backup got through but that the user should know: sources
+    /// that could not be read, files skipped, a snapshot with nothing in it.
+    pub warnings: Vec<String>,
 }
 
 impl RunOutcome {
@@ -367,7 +445,7 @@ impl Backup {
         self.directory.is_some() || self.files_from.is_some() || !self.include.is_empty()
     }
 
-    fn backup_args(&self, dry_run: bool) -> Vec<String> {
+    fn backup_args(&self, dry_run: bool, leave_out: &[String]) -> Vec<String> {
         let mut args = vec![
             "backup".to_string(),
             "-r".to_string(),
@@ -385,7 +463,7 @@ impl Backup {
         if let Some(exclude_file) = &self.exclude_file {
             args.extend(["--exclude-file".to_string(), expand_env_vars(exclude_file)]);
         }
-        for pattern in &self.exclude {
+        for pattern in self.exclude.iter().chain(leave_out) {
             args.extend(["--exclude".to_string(), expand_env_vars(pattern)]);
         }
 
@@ -395,25 +473,65 @@ impl Backup {
         args
     }
 
-    fn backup(&self, dry_run: bool) -> Result<(), String> {
-        if !self.has_sources() {
-            return Err("nothing to back up: set `directory`, `files-from` or `include`".to_string());
-        }
-        let args = self.backup_args(dry_run);
+    /// The folders this backup reads, as written in the config (`files-from`
+    /// lists are not folders and are left to restic).
+    pub fn source_folders(&self) -> Vec<&str> {
+        self.directory.iter().chain(&self.include).map(String::as_str).collect()
+    }
 
-        let status = run_status("restic", &args)?;
-        match status.code() {
-            Some(0) => Ok(()),
-            Some(RESTIC_PARTIAL_BACKUP) => {
-                eprintln!(
-                    "warning: some files could not be read and were skipped (restic exit code 3); \
-                     the snapshot was still saved, so continuing. On macOS, grant your terminal \
-                     (or the scheduler) Full Disk Access to include protected folders."
-                );
-                Ok(())
-            }
-            _ => Err(format!("restic failed with status {status}")),
+    /// How many files the newest snapshot of the repository holds, as restic
+    /// counted them. `None` if it can't tell (older restic, unreadable output).
+    fn latest_snapshot_files(&self) -> Option<u64> {
+        let output = Command::new("restic")
+            .args(["snapshots", "-r", &expand_env_vars(&self.repo), "--latest", "1", "--json", "--no-lock"])
+            .output()
+            .ok()?;
+        parse_snapshot_files(&output.stdout)
+    }
+
+    /// Runs `restic backup`. `Ok` carries what is worth telling the user: sources
+    /// that could not be read, files skipped, or a snapshot with nothing in it.
+    /// restic exits 3 when it saved a snapshot but could not read some files; that
+    /// is only a warning if the snapshot holds the rest, so a snapshot of nothing
+    /// is an error, however the run ended.
+    fn backup(&self, task_name: &str, dry_run: bool, leave_out: &[String]) -> Result<Vec<String>, RunError> {
+        if !self.has_sources() {
+            return Err("nothing to back up: set `directory`, `files-from` or `include`".to_string().into());
         }
+
+        // Look before restic does, so the reason is stated plainly instead of
+        // being one error line among thousands.
+        let problems = crate::sources::check_folders(&self.source_folders());
+        let mut warnings = crate::sources::report(&problems);
+        if !problems.is_empty() {
+            problems_notice(task_name, &problems).print();
+        }
+
+        let mut cmd = Command::new("restic");
+        cmd.args(self.backup_args(dry_run, leave_out));
+        let (status, stderr) = crate::remote::run_streaming(cmd, "restic")?;
+        let code = status.code();
+        if code != Some(0) && code != Some(RESTIC_PARTIAL_BACKUP) {
+            return Err(format!("restic failed with status {status}").into());
+        }
+
+        // How many files restic saved: asked once, since a snapshot of nothing is
+        // what must not pass for a good backup.
+        let files = if dry_run { None } else { self.latest_snapshot_files() };
+        if code == Some(RESTIC_PARTIAL_BACKUP) {
+            let unreadable = stderr.lines().filter(|l| l.starts_with("error:")).count();
+            let first = stderr.lines().find(|l| l.starts_with("error:")).map(brief_error);
+            if files == Some(0) {
+                return Err(empty_snapshot_error(task_name, &self.source_folders().join(", "), &problems, first));
+            }
+            warnings.push(format!(
+                "{unreadable} file(s) or folder(s) could not be read and were skipped{}",
+                first.map(|f| format!(" (first: {f})")).unwrap_or_default()
+            ));
+        } else if files == Some(0) {
+            warnings.push("the snapshot contains no files: the folder is empty or everything in it is excluded".to_string());
+        }
+        Ok(warnings)
     }
 
     fn check_args(&self) -> Vec<String> {
@@ -590,7 +708,8 @@ impl Backup {
         config: &VivoConfig,
         task_name: &str,
         secrets: &Secrets,
-    ) -> Result<RunOutcome, String> {
+        leave_out: &[LeftOut],
+    ) -> Result<RunOutcome, RunError> {
         let password = secrets
             .password_for(self.password_profile())
             .ok_or_else(|| crate::config::missing_profile(self.password_profile().unwrap_or_default()))?;
@@ -616,7 +735,9 @@ impl Backup {
             } else {
                 self.ensure_local_repo_init()?;
             }
-            self.backup(dry_run)?;
+            let patterns: Vec<String> = leave_out.iter().map(|l| l.pattern.clone()).collect();
+            outcome.warnings = self.backup(task_name, dry_run, &patterns)?;
+            outcome.warnings.extend(leave_out.iter().map(|l| l.warning.clone()));
         }
         let state = crate::state::State::load();
         if config.start_step <= Step::Check && self.step_due(&Step::Check, task_name, config, &state) {
@@ -642,6 +763,7 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::{expand_env_vars, RunOutcome};
+    use crate::notice::RunError;
     use crate::step::Step;
     use std::collections::HashMap;
     use std::time::Instant;
@@ -667,7 +789,7 @@ mod tests {
 
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{original}", dir.path().display()));
-        let result = backup.backup(false);
+        let result = backup.backup("t", false, &[]).map(|_| ()).map_err(|e| e.summary);
         std::env::set_var("PATH", original);
         result
     }
@@ -699,7 +821,7 @@ mod tests {
         );
         let b = cfg.tasks[0].backup().unwrap();
         assert_eq!(
-            b.backup_args(false),
+            b.backup_args(false, &[]),
             ["backup", "-r", "/tmp/r", "/a", "/b", "/c d", "--exclude", "**/*.tmp", "--exclude", "**/Thumbnails"]
         );
         assert_eq!(b.include(), ["/b", "/c d"]);
@@ -707,24 +829,36 @@ mod tests {
     }
 
     #[test]
+    fn leave_out_patterns_are_excluded_for_that_run_only() {
+        let cfg = config_with("directory \"/a\"\nexclude \"**/*.tmp\"");
+        let b = cfg.tasks[0].backup().unwrap();
+        assert_eq!(
+            b.backup_args(false, &["**/*.photoslibrary".to_string()]),
+            ["backup", "-r", "/tmp/r", "/a", "--exclude", "**/*.tmp", "--exclude", "**/*.photoslibrary"]
+        );
+        // the configured excludes are not changed by it
+        assert_eq!(b.backup_args(false, &[]), ["backup", "-r", "/tmp/r", "/a", "--exclude", "**/*.tmp"]);
+    }
+
+    #[test]
     fn backup_args_include_only_with_dry_run() {
         let cfg = config_with("include \"/x\"");
         let b = cfg.tasks[0].backup().unwrap();
-        assert_eq!(b.backup_args(true), ["backup", "-r", "/tmp/r", "/x", "--dry-run"]);
+        assert_eq!(b.backup_args(true, &[]), ["backup", "-r", "/tmp/r", "/x", "--dry-run"]);
     }
 
     #[test]
     fn backup_args_keep_files_from_next_to_include() {
         let cfg = config_with("files-from \"/list\"\ninclude \"/x\"");
         let b = cfg.tasks[0].backup().unwrap();
-        assert_eq!(b.backup_args(false), ["backup", "-r", "/tmp/r", "--files-from", "/list", "/x"]);
+        assert_eq!(b.backup_args(false, &[]), ["backup", "-r", "/tmp/r", "--files-from", "/list", "/x"]);
     }
 
     #[test]
     fn backup_without_any_source_is_an_error() {
         let cfg = config_with("exclude \"*.tmp\"");
         let b = cfg.tasks[0].backup().unwrap();
-        assert!(b.backup(false).unwrap_err().contains("nothing to back up"));
+        assert!(b.backup("t", false, &[]).unwrap_err().summary.contains("nothing to back up"));
     }
 
     #[test]
@@ -862,7 +996,7 @@ mod tests {
         std::env::set_var("PATH", format!("{}:{original_path}", dir.path().display()));
         std::env::set_var("RESTIC_PASSWORD", "ambient");
         let config = vivo_config(true);
-        let result = cfg.tasks[0].backup().unwrap().run(&config, "t", &secrets).map(|_| ());
+        let result = cfg.tasks[0].backup().unwrap().run(&config, "t", &secrets, &[]).map(|_| ()).map_err(|e| e.summary);
         let after = std::env::var("RESTIC_PASSWORD").unwrap();
         std::env::set_var("PATH", original_path);
         match original_pw {
@@ -883,8 +1017,8 @@ mod tests {
             "restic_password: global\npasswords:\n  photos: pw-photos\n",
         );
         assert!(result.is_ok(), "{result:?}");
-        // init, backup, check, forget
-        assert_eq!(seen, ["pw-photos"; 4]);
+        // init, backup, snapshots (how many files it saved), check, forget
+        assert_eq!(seen, ["pw-photos"; 5]);
     }
 
     #[cfg(unix)]
@@ -892,7 +1026,7 @@ mod tests {
     fn backup_without_a_profile_uses_the_global_password() {
         let (result, seen) = passwords_seen_by_restic("", "restic_password: global\npasswords:\n  photos: pw-photos\n");
         assert!(result.is_ok(), "{result:?}");
-        assert_eq!(seen, ["global"; 4]);
+        assert_eq!(seen, ["global"; 5]);
     }
 
     #[cfg(unix)]
@@ -981,6 +1115,151 @@ mod tests {
         assert!(b2.contains("b2 remotes cannot limit upload speed"), "{b2}");
         assert!(remote("s3:http://h/b", "limit-upload \"fast\"").is_err());
         assert!(remote("rustfs:http://h/b", "limit-upload \"5M\"\nmc-limit-upload \"5MiB\"").is_err());
+    }
+
+    /// Runs `Backup::backup` against a fake `restic`: `backup` writes `stderr_text`
+    /// to stderr and exits `code`, `snapshots` prints `snapshots_json`. It answers
+    /// for its own repository only (PATH is process-wide), failing for any other.
+    #[cfg(unix)]
+    fn fake_backup(code: i32, stderr_text: &str, snapshots_json: &str, dry_run: bool, source: Option<&str>) -> Result<Vec<String>, RunError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _path_guard = crate::PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::write(dir.path().join("stderr.txt"), stderr_text).unwrap();
+        std::fs::write(dir.path().join("snap.json"), snapshots_json).unwrap();
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n*'{repo}'*) ;;\n*) exit 1;;\nesac\ncase \"$1\" in\nsnapshots) cat '{snap}'; exit 0;;\nbackup) cat '{err}' >&2; exit {code};;\nesac\nexit 0\n",
+            repo = repo.display(),
+            snap = dir.path().join("snap.json").display(),
+            err = dir.path().join("stderr.txt").display(),
+        );
+        let fake = dir.path().join("restic");
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let source = source.map(str::to_string).unwrap_or_else(|| dir.path().display().to_string());
+        let src = format!("default-task \"t\"\ntasks {{ task \"t\" {{ backup {{ repo \"{}\"\ndirectory \"{source}\" }} }} }}", repo.display());
+        let cfg = BackupConfig::parse("t", &src).unwrap();
+
+        let original = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original}", dir.path().display()));
+        let result = cfg.tasks[0].backup().unwrap().backup("t", dry_run, &[]);
+        std::env::set_var("PATH", original);
+        result
+    }
+
+    /// What the console shows for a failure, on one wide line per row.
+    fn console(err: &RunError) -> String {
+        err.notice.as_ref().map(|n| n.render(1000)).unwrap_or_default()
+    }
+
+    fn summary(files: u64) -> String {
+        format!("[{{\"summary\":{{\"total_files_processed\":{files},\"total_bytes_processed\":0}}}}]")
+    }
+
+    const UNREADABLE: &str = "error: openfile for readdirnames failed: open /Users/me/Pictures/Photos Library.photoslibrary: operation not permitted\nerror: another\nWarning: at least one source file could not be read\n";
+
+    #[test]
+    fn brief_error_keeps_the_path_and_the_reason() {
+        use super::brief_error;
+        assert_eq!(
+            brief_error("error: openfile for readdirnames failed: open /Users/me/Pictures/Photos Library.photoslibrary: operation not permitted"),
+            "/Users/me/Pictures/Photos Library.photoslibrary (operation not permitted)"
+        );
+        assert_eq!(brief_error("error: lstat /x/y.jpg: no such file or directory"), "/x/y.jpg (no such file or directory)");
+        // not in the usual shape: just drop the prefix
+        assert_eq!(brief_error("error: something odd"), "something odd");
+    }
+
+    #[test]
+    fn parses_the_snapshot_file_count() {
+        assert_eq!(super::parse_snapshot_files(summary(7).as_bytes()), Some(7));
+        assert_eq!(super::parse_snapshot_files(b"[{\"summary\":{\"total_files_processed\":0}}]"), Some(0));
+        // the newest snapshot is the last one listed
+        assert_eq!(super::parse_snapshot_files(b"[{\"summary\":{\"total_files_processed\":1}},{\"summary\":{\"total_files_processed\":9}}]"), Some(9));
+        for unknown in ["[]", "[{}]", "[{\"summary\":{}}]", "null", "not json", ""] {
+            assert_eq!(super::parse_snapshot_files(unknown.as_bytes()), None, "{unknown:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn some_unreadable_files_is_a_recorded_warning_not_a_failure() {
+        let warnings = fake_backup(3, UNREADABLE, &summary(120), false, None).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("2 file(s) or folder(s) could not be read"), "{warnings:?}");
+        assert!(warnings[0].contains("Photos Library.photoslibrary"), "names the first one: {warnings:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_files_and_an_empty_snapshot_is_a_failure_that_names_the_fix() {
+        let err = fake_backup(3, UNREADABLE, &summary(0), false, None).unwrap_err();
+        assert!(err.summary.contains("nothing was backed up"), "{err}");
+        assert!(console(&err).contains(crate::sources::permission_hint()), "{}", console(&err));
+        // a plain permission error with nothing about macOS still gets the hint
+        let err = fake_backup(3, "error: open /x: permission denied\n", &summary(0), false, None).unwrap_err();
+        assert!(console(&err).contains(crate::sources::permission_hint()), "{}", console(&err));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_clean_run_that_saved_nothing_is_a_warning() {
+        let warnings = fake_backup(0, "", &summary(0), false, None).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("snapshot contains no files"), "{warnings:?}");
+        assert!(fake_backup(0, "", &summary(3), false, None).unwrap().is_empty(), "a normal backup says nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_a_file_count_from_restic_the_old_behaviour_holds() {
+        // restic older than 0.17 has no snapshot summary: exit 3 stays a warning
+        let warnings = fake_backup(3, UNREADABLE, "[{\"id\":\"abc\"}]", false, None).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(fake_backup(0, "", "[{\"id\":\"abc\"}]", false, None).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dry_run_never_asks_for_a_snapshot() {
+        // no snapshot exists to ask about, so exit 3 is just a warning
+        let warnings = fake_backup(3, UNREADABLE, &summary(0), true, None).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(!warnings[0].contains("nothing was backed up"));
+        assert!(fake_backup(0, "", &summary(0), true, None).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn other_restic_failures_still_fail() {
+        assert!(fake_backup(1, "Fatal: boom\n", &summary(5), false, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_source_is_warned_about_before_restic_runs() {
+        let warnings = fake_backup(0, "", &summary(4), false, Some("/no/such/folder/for/vivo")).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("does not exist"), "{warnings:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_source_names_the_permission_fix_up_front() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("id").arg("-u").output().map(|o| o.stdout == b"0\n").unwrap_or(false) {
+            return;
+        }
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(blocked.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let shown = blocked.path().display().to_string();
+        let result = fake_backup(3, UNREADABLE, &summary(0), false, Some(&shown));
+        std::fs::set_permissions(blocked.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // restic saw nothing either, so this is a failure, and it says why
+        assert!(console(&result.unwrap_err()).contains(crate::sources::permission_hint()));
     }
 
     #[test]
